@@ -1,0 +1,6 @@
+# Ignora il contenuto ma mantieni la cartella (tranne il file .gitkeep)
+models/*
+!models/.gitkeep
+
+data/*
+!data/.gitkeep

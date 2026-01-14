@@ -20,7 +20,7 @@ module purge
 
 # CARICA LO STESSO PYTHON CHE HAI USATO PER CREARE IL VENV
 # Copio quello del tuo amico, presumendo usiate lo stesso cluster/config
-module load Python/3.9.21
+module load Python/3.11.3-GCCcore-12.3.0
 
 # ATTIVA IL TUO VENV
 # ATTENZIONE: Cambia 'venv' col nome della tua cartella se diverso (es. .venv o r2p_env)

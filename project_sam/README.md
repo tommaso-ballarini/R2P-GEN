@@ -3,31 +3,7 @@
 PREREQUISITI
 
 - VPN attiva: GlobalProtect connesso
-- Terminale:
-  - Mac / Linux: Terminale
-  - Windows: PowerShell o WSL
-- Cartella progetto locale: R2P_Gen_Project con:
 
-R2P_Gen_Project/
-  data/                (immagini di test, es. 1.jpg)
-  r2p_core/            (copiata dalla repo originale R2P)
-  full_loop.py
-  step1_*.py
-  step2_*.py
-  ...
-  requirements.txt
-
---------------------------------------------------
-
-CARICARE I FILE SUL CLUSTER
-
-Usiamo scp. Carichiamo tutto in /scratch (NON /home).
-
-Dal TUO PC:
-
-scp -r R2P_Gen_Project tuo_user@indirizzo_cluster:/scratch/user/tuo_user/
-
---------------------------------------------------
 
 SETUP AMBIENTE (UNA SOLA VOLTA)
 
@@ -35,13 +11,10 @@ Collegati al cluster:
 
 ssh tuo_user@indirizzo_cluster
 
-Vai nella cartella:
+clona la repo
 
-cd /scratch/user/tuo_user/R2P_Gen_Project
+Crea l'ambiente dentro la cartella della repo:
 
-Crea l'ambiente:
-
-module load Python/3.11.3-GCCcore-12.3.0
 python -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
@@ -49,7 +22,7 @@ pip install -r requirements.txt
 
 Se non hai requirements.txt:
 
-pip install torch torchvision torchaudio diffusers transformers accelerate peft pillow flash-attn --no-build-isolation
+
 
 --------------------------------------------------
 

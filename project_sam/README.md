@@ -23,8 +23,6 @@ pip install --upgrade pip
 
 pip install -r requirements.txt
 
-Se non hai requirements.txt:
-
 
 
 --------------------------------------------------
@@ -35,7 +33,7 @@ Crea il file:
 
 nano run_r2p.sh
 
-Contenuto COMPLETO:
+Copia il Contenuto COMPLETO:
 
 #!/bin/bash
 #SBATCH --job-name=r2p_gen

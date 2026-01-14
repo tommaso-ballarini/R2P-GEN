@@ -1,0 +1,11 @@
+torch
+torchvision
+torchaudio
+diffusers
+transformers
+accelerate
+peft
+pillow
+opencv-python
+sentencepiece
+protobuf

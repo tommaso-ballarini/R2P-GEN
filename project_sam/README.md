@@ -16,8 +16,11 @@ clona la repo
 Crea l'ambiente dentro la cartella della repo:
 
 python -m venv venv
+
 source venv/bin/activate
+
 pip install --upgrade pip
+
 pip install -r requirements.txt
 
 Se non hai requirements.txt:

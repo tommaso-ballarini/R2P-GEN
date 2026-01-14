@@ -13,7 +13,9 @@ ssh tuo_user@indirizzo_cluster
 
 clona la repo
 
-Crea l'ambiente dentro la cartella della repo:
+muoviti dentro la cartella project
+
+Crea l'ambiente dentro la cartella:
 
 python -m venv venv
 

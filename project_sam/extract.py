@@ -12,7 +12,7 @@ sys.path.append(r2p_path)
 try:
     from models.mini_cpm_reasoning import MiniCPMReasoning
     # Usiamo la funzione specifica per Retail (PerVA) come da documentazione
-    from database.mini_cpm_info import get_detailed_input_msgs_retail
+    from database.mini_cpm_info import MiniCPMDescription
 except ImportError as e:
     print(f"❌ Errore Import R2P: {e}")
     print("Assicurati di aver copiato le cartelle 'models' e 'database' dentro 'r2p_core'")

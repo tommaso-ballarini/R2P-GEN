@@ -8,12 +8,12 @@ import requests
 from io import BytesIO
 import json
 import sys
-sys.path.append("utils")
+sys.path.append("r2p_core/utils")
 from defined import categories
 from filelock import FileLock
 import argparse
 from transformers import CLIPModel, CLIPProcessor
-sys.path.append("evaluators")
+sys.path.append("r2p_core/evaluators")
 from compute_confidence import ClipScoreCalculator
 
 

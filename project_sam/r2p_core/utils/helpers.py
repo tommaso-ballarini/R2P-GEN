@@ -9,7 +9,7 @@ from typing import List, Dict, Union
 from copy import deepcopy
 from pathlib import Path
 from dataclasses import dataclass
-from defined import myvlm_reverse_category_dict, yollava_reverse_category_dict, osc_reverse_category_dict
+from r2p_core.utils.defined import myvlm_reverse_category_dict, yollava_reverse_category_dict, osc_reverse_category_dict
 
 @dataclass
 class EvalConfig:

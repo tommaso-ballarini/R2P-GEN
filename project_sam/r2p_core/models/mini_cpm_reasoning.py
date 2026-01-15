@@ -3,6 +3,9 @@ import torch
 import numpy as np
 import random
 from transformers import AutoModel, AutoTokenizer
+import sys
+import os
+sys.path.append("r2p_core")
 from evaluators.compute_confidence import ConfidenceCalculator
 from models.model_interface import ModelInterface
 from models.model_adapters import MiniCPMAdapter

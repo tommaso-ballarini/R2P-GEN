@@ -9,7 +9,7 @@ sys.path.append(os.path.join(current_dir, 'r2p_core'))
 
 from models.mini_cpm_reasoning import MiniCPMReasoning
 # Se R2P ha questa funzione specifica per il confronto, la usiamo
-from models.prompt_generator import get_image2image_plus_text_comparison_prompt
+from models.prompt_generator import BasePromptGenerator
 
 def verify_generation(generated_image_path, reference_image_path, fingerprints, model=None):
     print(f"\n⚖️ [STEP 3] Verifica/Reasoning Loop")

@@ -36,7 +36,7 @@ def extract_fingerprints(image_path, model=None):
     
     # Usa il prompt specifico per oggetti Retail (PerVA)
     # Questo genera il template JSON che forza il modello a cercare dettagli
-    msgs = get_detailed_input_msgs_retail(category="retail object")
+    msgs = MiniCPMDescription()
     
     # 3. Inferenza
     try:

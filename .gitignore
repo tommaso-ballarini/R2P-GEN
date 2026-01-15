@@ -4,3 +4,5 @@ models/*
 
 data/*
 !data/.gitkeep
+
+project_sam/venv/

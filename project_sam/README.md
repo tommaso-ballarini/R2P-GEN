@@ -64,19 +64,6 @@ module load Python/3.11.3-GCCcore-12.3.0
 
 source venv/bin/activate
 
-
-export HF_HOME="/scratch/user/$USER/.cache/huggingface"
-
-export TORCH_HOME="/scratch/user/$USER/.cache/torch"
-
-mkdir -p $HF_HOME
-
-mkdir -p $TORCH_HOME
-
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-
-export FLASH_ATTN="False"
-
 python full_loop.py
 
 --------------------------------------------------

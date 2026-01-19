@@ -38,6 +38,7 @@ nano run_r2p.sh
 Copia il Contenuto COMPLETO:
 
 #!/bin/bash
+
 #SBATCH --job-name=r2p_gen  
 
 #SBATCH --output=out_r2p_%j.txt

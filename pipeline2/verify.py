@@ -2,38 +2,52 @@ import torch
 import os
 import re
 import time
+import numpy as np  # <--- FIX: Aggiunto import mancante
 from PIL import Image
-# Assicurati che questi import puntino ai tuoi file corretti
 from pipeline2.r2p_tools import ClipScoreCalculator, ConfidenceCalculator, MiniCPMAdapter
 
 # =============================================================================
-# 1. MONKEY PATCH (FORZATA)
+# SEZIONE 1: MONKEY PATCH (ROBUSTA & SMART)
 # =============================================================================
 def _patch_minicpm_interface(reasoner):
+    """
+    Modifica la funzione chat del modello per accettare kwargs extra
+    senza causare conflitti o errori di argomenti duplicati.
+    """
     MiniCPMModelClass = reasoner.model_interface.__class__
     
-    # 🚨 RIMOSSO IL CONTROLLO DI SICUREZZA PER FORZARE L'AGGIORNAMENTO 🚨
+    # Rimuovi il commento qui sotto se vuoi evitare di ri-applicare la patch ogni volta
     # if getattr(MiniCPMModelClass, "_is_patched_for_v26", False):
     #     return
 
-    print("🔧 Applying Monkey-Patch to MiniCPMModel.chat (Force Update)...")
+    print("🔧 Applying Monkey-Patch to MiniCPMModel.chat (Smart Merge Version)...")
     
-    # Questa è la versione CORRETTA che accetta tokenizer e kwargs
     def patched_chat(self, msgs, tokenizer=None, **kwargs):
-        # Se il tokenizer non è passato, usa quello dell'istanza
+        # 1. Gestione Tokenizer: usa quello passato o quello dell'istanza
         use_tokenizer = tokenizer if tokenizer else self.tokenizer
         
-        # Chiama il modello
+        # 2. Definisci i parametri di default che servono per i logits
+        # Questi sono i parametri BASE che vogliamo sempre.
+        params = {
+            "sampling": False,
+            "max_new_tokens": 10,
+            "return_dict_in_generate": True,
+            "output_scores": True
+        }
+        
+        # 3. Unisci con kwargs: se l'interceptor passa parametri (es. 'sampling'),
+        # questi sovrascriveranno i default senza creare duplicati.
+        params.update(kwargs)
+        
+        # 4. Chiama il modello passando il dizionario unificato
+        # Questo evita l'errore "multiple values for keyword argument"
         res = self.model.chat(
             msgs=msgs, 
             tokenizer=use_tokenizer,
-            sampling=False, 
-            max_new_tokens=10,
-            return_dict_in_generate=True,
-            output_scores=True,
-            **kwargs 
+            **params 
         )
         
+        # 5. Gestione Output (tuple vs object vs string)
         if isinstance(res, tuple):
             if len(res) == 3: return res[2], res[0]
             elif len(res) == 2: return {}, res[0]
@@ -46,36 +60,70 @@ def _patch_minicpm_interface(reasoner):
 
 
 # =============================================================================
-# 2. INTERCEPTOR LOGIC
+# SEZIONE 2: INTERCEPTOR LOGIC (GENERATION CONFIG AWARE)
 # =============================================================================
 def chat_with_logits_interceptor(reasoner, msgs):
+    """
+    Intercetta la chiamata a generate() per rubare i logits (scores).
+    FIX CRITICO: Modifica anche generation_config se presente, 
+    altrimenti i kwargs vengono ignorati dal modello.
+    """
     model = reasoner.model_interface.model
     original_generate = model.generate
     captured_data = {"scores": None}
 
     def spy_generate(*args, **kwargs):
+        # 1. FORZA I KWARGS BASE
         kwargs['output_scores'] = True
         kwargs['return_dict_in_generate'] = True
-        kwargs['max_new_tokens'] = 10 
+        kwargs['max_new_tokens'] = 10
         
+        # 2. FIX CRITICO: HACK DI GENERATION_CONFIG
+        # MiniCPM crea un oggetto GenerationConfig che ha la priorità sui kwargs.
+        # Dobbiamo intercettarlo e modificarlo brutalmente.
+        
+        # Cerca nei kwargs
+        if 'generation_config' in kwargs:
+            gen_config = kwargs['generation_config']
+            gen_config.output_scores = True
+            gen_config.return_dict_in_generate = True
+            # Assicuriamoci che non stia facendo sampling se non vogliamo
+            if 'sampling' in kwargs and not kwargs['sampling']:
+                 gen_config.do_sample = False
+        
+        # Cerca negli args (di solito è il 3° o 4° argomento posizionale, ma cerchiamo per tipo)
+        from transformers import GenerationConfig
+        for arg in args:
+            if isinstance(arg, GenerationConfig):
+                arg.output_scores = True
+                arg.return_dict_in_generate = True
+
+        # 3. Chiamata reale al modello
         output = original_generate(*args, **kwargs)
         
+        # 4. Cattura dei dati
+        # Se output è un oggetto ModelOutput (comportamento corretto con return_dict=True)
         if hasattr(output, 'scores'):
             captured_data['scores'] = output.scores
         elif isinstance(output, dict) and 'scores' in output:
             captured_data['scores'] = output['scores']
+        # Fallback: Se per qualche motivo ritorna ancora solo tensori (tuple), non possiamo farci nulla
+        
         return output
 
     try:
+        # Sostituiamo generate
         model.generate = spy_generate
         
-        # Ora chiamiamo la patch che accetta ESPLICITAMENTE il tokenizer
+        # Chiamiamo la chat patchata
+        # Passiamo sampling=False esplicitamente per aiutare la config
         res = reasoner.model_interface.chat(
             msgs=msgs, 
             tokenizer=reasoner.model_interface.tokenizer, 
-            sampling=False
+            sampling=False 
         )
         
+        # Estrazione testo risposta
         response_text = ""
         if isinstance(res, tuple) and len(res) > 0:
             response_text = res[1] if len(res) >= 2 else str(res[0])
@@ -83,12 +131,13 @@ def chat_with_logits_interceptor(reasoner, msgs):
             response_text = res
             
     except Exception as e:
-        # Se fallisce ancora, stampiamo l'errore ma non crashiamo
         print(f"⚠️ Interceptor Error: {e}")
         response_text = "Error"
     finally:
+        # Ripristino
         model.generate = original_generate
 
+    # Costruiamo l'output per il calcolatore
     class MockOutput: pass
     mock_out = MockOutput()
     mock_out.scores = captured_data['scores']
@@ -98,33 +147,6 @@ def chat_with_logits_interceptor(reasoner, msgs):
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
-def call_model_with_scores(reasoner, image, prompt):
-    """Helper che bypassa chat() e chiama generate() direttamente"""
-    import torch
-    
-    # Prepara input (simplified per test rapido)
-    full_prompt = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-    inputs = reasoner.model_interface.tokenizer(full_prompt, return_tensors="pt")
-    inputs = {k: v.to(reasoner.model_interface.model.device) for k, v in inputs.items()}
-    
-    # Genera con scores
-    with torch.no_grad():
-        outputs = reasoner.model_interface.model.generate(
-            **inputs,
-            max_new_tokens=10,
-            do_sample=False,
-            return_dict_in_generate=True,
-            output_scores=True,
-            pad_token_id=reasoner.model_interface.tokenizer.eos_token_id
-        )
-    
-    # Decodifica
-    prompt_len = inputs['input_ids'].shape[1]
-    generated_ids = outputs.sequences[0][prompt_len:]
-    response_text = reasoner.model_interface.tokenizer.decode(generated_ids, skip_special_tokens=True)
-    
-    return outputs, response_text
-
 def _extract_attributes_for_clip(fingerprints: dict) -> list:
     """Estrae gli attributi puliti mantenendo l'ordine di priorità."""
     attributes = []
@@ -151,73 +173,6 @@ def _extract_attributes_for_clip(fingerprints: dict) -> list:
          elif isinstance(fingerprints['attributes'], dict):
              raw_attrs = [str(v) for v in fingerprints['attributes'].values()]
          
-         for attr in raw_attrs:
-             if attr not in seen:
-                 attributes.append(attr)
-                 seen.add(attr)
-
-    return attributes 
-    
-# =============================================================================
-# MAIN VERIFICATION LOGIC
-# =============================================================================
-
-import torch
-import os
-import re
-import numpy as np
-from PIL import Image
-from pipeline2.r2p_tools import ClipScoreCalculator, ConfidenceCalculator, MiniCPMAdapter
-
-# =============================================================================
-# MONKEY PATCHING (Invariato)
-# =============================================================================
-def _patch_minicpm_interface(reasoner):
-    MiniCPMModelClass = reasoner.model_interface.__class__
-    if getattr(MiniCPMModelClass, "_is_patched_for_v26", False):
-        return
-    print("🔧 Applying Monkey-Patch to MiniCPMModel.chat for v2.6 compatibility...")
-    def patched_chat(self, msgs):
-        res = self.model.chat(msgs=msgs, tokenizer=self.tokenizer)
-        if isinstance(res, tuple):
-            if len(res) == 3:
-                answer, history, extra = res
-                return extra, answer
-            elif len(res) == 2:
-                answer, history = res
-                return {}, answer
-        return {}, res
-    MiniCPMModelClass.chat = patched_chat
-    MiniCPMModelClass._is_patched_for_v26 = True
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-def _extract_attributes_for_clip(fingerprints: dict) -> list:
-    """Estrae TUTTI gli attributi puliti."""
-    attributes = []
-    keys_to_check = ['distinct features', 'brand/text', 'pattern', 'material', 'color']
-    seen = set()
-    
-    for key in keys_to_check:
-        if key in fingerprints and fingerprints[key]:
-            val = fingerprints[key]
-            if "no visible" in val.lower() or "none" in val.lower(): continue
-            chunks = re.split(r'[;.]|\n', val)
-            for chunk in chunks:
-                clean_chunk = chunk.strip()
-                if len(clean_chunk) > 4 and "image" not in clean_chunk.lower():
-                    if clean_chunk not in seen:
-                        attributes.append(clean_chunk)
-                        seen.add(clean_chunk)
-    
-    # Fallback
-    if not attributes and 'attributes' in fingerprints:
-         raw_attrs = []
-         if isinstance(fingerprints['attributes'], list):
-             raw_attrs = [str(v) for v in fingerprints['attributes']]
-         elif isinstance(fingerprints['attributes'], dict):
-             raw_attrs = [str(v) for v in fingerprints['attributes'].values()]
          for attr in raw_attrs:
              if attr not in seen:
                  attributes.append(attr)
@@ -257,7 +212,7 @@ def verify_generation_r2p(
     except Exception as e:
         return {"is_verified": False, "reason": f"Image error: {e}", "vlm_history": [], "method": "Error"}
 
-    # Prep Attributes (TUTTI, non solo i primi 4)
+    # Prep Attributes (TUTTI)
     attributes_list = _extract_attributes_for_clip(fingerprints)
     
     # =========================================================================
@@ -268,50 +223,24 @@ def verify_generation_r2p(
     vlm_scores = []
 
     for attr in attributes_list:
-        # Prompt che forza una risposta binaria misurabile
         prompt = (
             f"Look at the image. Is the feature '{attr}' clearly visible and correct?\n"
             f"Ignore minor style issues, focus on the presence of the feature.\n"
             f"Answer strictly Yes or No."
         )
         
-        # 1. Chiamata al modello (Usa la chat wrappata che gestisce l'immagine correttamente)
+        # 1. Chiamata al modello tramite Interceptor
         msgs = [{"role": "user", "content": [gen_image, prompt]}]
         outputs, response_text = chat_with_logits_interceptor(reasoner, msgs)
-                
         
-       # Controllo di sicurezza prima di stampare
-        if outputs.scores is not None:
-            print(f"   Scores captured: {len(outputs.scores)} tokens")
-        else:
-            print("   ⚠️ WARNING: No scores captured by interceptor.")
+        # Debugging Output (Solo se servono controlli approfonditi)
+        # if outputs.scores is None:
+        #    print("   ⚠️ WARNING: No scores captured. Check interceptor logic.")
 
-        # ⭐ DEBUG: Aggiungi questo blocco
-        print(f"\n🔍 DEBUG OUTPUTS:")
-        print(f"   Type: {type(outputs)}")
-        print(f"   Is dict: {isinstance(outputs, dict)}")
-        if isinstance(outputs, dict):
-            print(f"   Keys: {list(outputs.keys())}")
-        else:
-            print(f"   Has attr 'scores': {hasattr(outputs, 'scores')}")
-            print(f"   Has attr 'logits': {hasattr(outputs, 'logits')}")
-            print(f"   Dir: {[x for x in dir(outputs) if not x.startswith('_')][:10]}")
-
-        # Se esiste scores/logits, mostra la struttura
-        if isinstance(outputs, dict) and 'scores' in outputs:
-            print(f"   Scores type: {type(outputs['scores'])}")
-            print(f"   Scores len: {len(outputs['scores']) if outputs['scores'] else 0}")
-        elif hasattr(outputs, 'scores'):
-            print(f"   Scores type: {type(outputs.scores)}")
-            print(f"   Scores len: {len(outputs.scores) if outputs.scores else 0}")
-        print(f"   Response text: '{response_text[:50]}'...\n")
-
-        # 2. ⭐ NUOVO: Calcolo Confidence usando il metodo corretto
+        # 2. Calcolo Confidence
         result = conf_calc.calculate_binary_confidence(outputs, response_text)
         
-        # Usa yes_confidence come score (più alto = più sicuro che la feature sia presente)
         score = result['yes_confidence']
-        
         vlm_scores.append(score)
         
         vlm_history.append({
@@ -320,16 +249,15 @@ def verify_generation_r2p(
             "prompt": prompt,
             "response": response_text,
             "score": score,
-            "method": result['method'],  # Per debugging
+            "method": result['method'],
             "yes_conf": result['yes_confidence'],
             "no_conf": result['no_confidence']
         })
         
-        # Emoji basato su confidence reale
         emoji = "🟢" if score > 0.7 else "🟡" if score > 0.4 else "🔴"
         print(f"   - {attr[:25]:<25} | Y:{result['yes_confidence']:.2f} N:{result['no_confidence']:.2f} {emoji} [{result['method']}]")
 
-    # CALCOLO MEDIA VLM (Mancante nel tuo codice originale)
+    # CALCOLO MEDIA VLM
     if vlm_scores:
         vlm_avg_score = sum(vlm_scores) / len(vlm_scores)
     else:
@@ -344,18 +272,15 @@ def verify_generation_r2p(
     _, ref_breakdown = clip_calculator.compute_attribute_score(ref_image, attributes_list)
     clip_details = {'gen': gen_breakdown, 'ref': ref_breakdown}
     
-    # Logica Drop
     clip_pass = True
     clip_issues = []
     
-    # Check 1: Score assoluto troppo basso
     if gen_clip_score < clip_hard_floor:
         clip_pass = False
         clip_issues.append(f"Low Avg Score ({gen_clip_score:.2f})")
 
-    # Check 2: Significant Drops
     for attr, ref_val in ref_breakdown.items():
-        if ref_val > 0.18: # Solo se rilevante nell'originale
+        if ref_val > 0.18: 
             delta = gen_breakdown.get(attr, 0) - ref_val
             if delta < max_drop_threshold:
                 clip_pass = False
@@ -364,10 +289,9 @@ def verify_generation_r2p(
     print(f"[Phase 2] CLIP Check: {'PASS' if clip_pass else 'FAIL'} (Issues: {clip_issues})")
 
     # =========================================================================
-    # PHASE 3: DECISION GATE (The "Early Exit" Logic)
+    # PHASE 3: DECISION GATE
     # =========================================================================
     
-    # 1. STRONG AGREEMENT -> PASS
     if vlm_avg_score >= vlm_high_confidence and clip_pass:
         print("[Gate] ✅ AUTO-PASS: Strong Agreement (VLM High + CLIP Pass)")
         return {
@@ -379,7 +303,6 @@ def verify_generation_r2p(
             "clip_details": clip_details
         }
 
-    # 2. STRONG AGREEMENT -> FAIL (Refine)
     if vlm_avg_score <= vlm_low_confidence and not clip_pass:
         print("[Gate] ❌ AUTO-FAIL: Strong Agreement (VLM Low + CLIP Fail)")
         return {
@@ -391,7 +314,6 @@ def verify_generation_r2p(
             "clip_details": clip_details
         }
         
-    # 3. DISAGREEMENT / UNCERTAINTY -> TRIGGER PAIRWISE
     reason_for_trigger = []
     if not clip_pass: reason_for_trigger.append("CLIP detected drops")
     if vlm_avg_score < vlm_high_confidence: reason_for_trigger.append(f"VLM uncertain ({vlm_avg_score:.2f})")
@@ -400,13 +322,12 @@ def verify_generation_r2p(
     print("       >>> TRIGGERING PHASE 4 (Pairwise Analysis) on ALL attributes.")
 
     # =========================================================================
-    # PHASE 4: PAIRWISE REASONING (Only if needed)
+    # PHASE 4: PAIRWISE REASONING
     # =========================================================================
     
     adapter = MiniCPMAdapter(reasoner.model_interface.tokenizer)
     pairwise_scores = []
     
-    # Iteriamo su TUTTI gli attributi perché siamo in fase di arbitraggio
     for attr in attributes_list:
         prompt_text = (
             f"Compare the specific feature '{attr}' in Image 1 and Image 2.\n"
@@ -416,7 +337,7 @@ def verify_generation_r2p(
         
         msgs = adapter.format_image2image_plus_text_comparison_msgs(gen_image, ref_image, prompt_text)
         outputs, response_text = chat_with_logits_interceptor(reasoner, msgs)        
-        # ⭐ NUOVO: Usa il metodo corretto
+        
         result = conf_calc.calculate_binary_confidence(outputs, response_text)
         p_yes = result['yes_confidence']
         
@@ -434,14 +355,12 @@ def verify_generation_r2p(
         emoji = "✅" if p_yes > 0.6 else "⚠️"
         print(f"   - Pairwise '{attr[:20]}': Y:{result['yes_confidence']:.2f} {emoji} [{result['method']}]")
 
-    # Calcolo Score Finale Pairwise
+    # FIX CRASH: Usa np importato correttamente
     final_pairwise_score = np.mean(pairwise_scores) if pairwise_scores else 0.0
     
-    # Verdetto Finale basato SOLO su Pairwise (l'arbitro finale)
-    PAIRWISE_THRESHOLD = 0.60 # Soglia media per l'accettazione finale
+    PAIRWISE_THRESHOLD = 0.60 
     
     is_verified = final_pairwise_score >= PAIRWISE_THRESHOLD
-    
     status = "Pass" if is_verified else "Fail"
     print(f"[Phase 4] Final Pairwise Score: {final_pairwise_score:.4f} -> {status}")
 

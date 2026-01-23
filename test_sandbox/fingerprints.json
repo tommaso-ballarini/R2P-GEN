@@ -1,0 +1,120 @@
+{
+    "concept_dict": {
+        "<alx_1>": {
+            "name": "alx_1",
+            "image": [
+                "data/perva-data/test/bag/alx/1.jpg"
+            ],
+            "info": {
+                "general": "<alx_1> is a laptop bag with an elegant damask pattern and leather accents.",
+                "category": "Laptop Bag",
+                "shape": "Rectangular with rounded corners",
+                "material": "Canvas body, leather trim and handles",
+                "color": "Beige background with black damask design, brown leather details",
+                "state": "Closed and placed on a cushioned surface",
+                "pattern": "Black intricate damask print",
+                "distinct features": "Combination of fabric canvas and smooth leather; structured shape for carrying laptops",
+                "brand/text": "The brand name 'ZULU' appears in small letters on the front",
+                "soft tags": "[Damask Pattern, Laptop Case]",
+                "sdxl_prompt": "Category: Laptop Bag, Canvas body with black intricate damask print and brown leather accents, Rectangular shape with rounded corners, Beige background with visible text 'ZULU' on the front, Combination of fabric canvas and smooth leather; structured shape for carrying laptops. studio lighting, 8k, sharp focus, texture details, hyperrealistic"
+            },
+            "category": "Laptop Bag"
+        },
+        "<ash_1>": {
+            "name": "ash_1",
+            "image": [
+                "data/perva-data/test/bag/ash/1.jpg"
+            ],
+            "info": {
+                "general": "<ash_1> is a striped tote bag with leather accents.",
+                "category": "Tote Bag",
+                "shape": "Cylindrical with an opening at the top and two handles for carrying.",
+                "material": "Canvas fabric with leather trim.",
+                "color": "Cream base with black horizontal stripes and brown leather details.",
+                "state": "Placed on a hook against a wall.",
+                "pattern": "Horizontal black stripes on a cream background.",
+                "distinct features": "The combination of canvas material, contrasting colors, and leather detailing gives it a classic yet stylish appearance.",
+                "brand/text": "No visible text or brand markings.",
+                "soft tags": [
+                    "Bucket Bag",
+                    "Shoulder Bag"
+                ],
+                "sdxl_prompt": "Category: Tote Bag, Ash_1 is a striped tote bag with leather accents. Canvas fabric with cream base and black horizontal stripes, brown leather details, cylindrical shape with an opening at the top and two handles for carrying. No visible text or brand markings. Combination of canvas material, contrasting colors, and leather detailing gives it a classic yet stylish appearance. Visible Text: None. Distinctive Flaws/Details: Classic styling, studio lighting, 8k, sharp focus, texture details, hyperrealistic."
+            },
+            "category": "Tote Bag"
+        },
+        "<bkq_1>": {
+            "name": "bkq_1",
+            "image": [
+                "data/perva-data/test/bag/bkq/1.jpg"
+            ],
+            "info": {
+                "general": "<bkq_1> is a light blue crossbody bag with a buckle closure and long strap.",
+                "category": "Bag",
+                "shape": "Rectangular, slightly curved at the edges",
+                "material": "Leather or faux leather",
+                "color": "Light blue",
+                "state": "New with tags attached",
+                "pattern": "Solid color without any distinct pattern",
+                "distinct features": "Buckle detail on front for added style",
+                "brand/text": "No visible text or brand markings",
+                "soft tags": [
+                    "crossbody bag",
+                    "handbag"
+                ],
+                "sdxl_prompt": "Category: Bag, Light blue crossbody bag with a buckle closure and long strap. Material: Leather or faux leather. Shape: Rectangular, slightly curved at the edges. Color: Solid light blue without any distinct pattern. Visible Text: No visible text or brand markings. Distinctive Flaws/Details: Buckle detail on front for added style. Studio lighting, 8k, sharp focus, texture details, hyperrealistic."
+            },
+            "category": "Bag"
+        },
+        "<bxa_1>": {
+            "name": "bxa_1",
+            "image": [
+                "data/perva-data/test/bag/bxa/1.jpg"
+            ],
+            "info": {
+                "general": "<bxa_1> is a designer handbag with the iconic monogram pattern of Louis Vuitton.",
+                "category": "Handbag",
+                "shape": "Semi-structured, triangular shape",
+                "material": "Leather and canvas",
+                "color": "Brown with tan accents",
+                "state": "Folded over itself",
+                "pattern": "Louis Vuitton's signature 'LV' logo along with floral motifs and quatrefoils",
+                "distinct features": "Classic LV monogram design, silver hardware on handles",
+                "brand/text": "Louis Vuitton branding visible on front pocket flap",
+                "soft tags": "[Designer bag, Fashion accessory]",
+                "sdxl_prompt": "Category: Handbag, Designer handbag with iconic Louis Vuitton monogram pattern. Semi-structured triangular shape made of leather and canvas in brown with tan accents. Visible \"Louis Vuitton\" branding on front pocket flap. Classic LV monogram design throughout the bag, silver hardware on handles as distinctive detail. Studio lighting, 8k, sharp focus, texture details, hyperrealistic."
+            },
+            "category": "Handbag"
+        },
+        "<dbi_1>": {
+            "name": "dbi_1",
+            "image": [
+                "data/perva-data/test/bag/dbi/1.jpg"
+            ],
+            "info": {
+                "general": "<dbi_1> is a yellow and black fabric bag with mesh side pockets.",
+                "category": "Bag",
+                "shape": "Rectangular with rounded edges",
+                "material": "Fabric, likely polyester or nylon",
+                "color": "Bright yellow body with navy blue accents",
+                "state": "Closed",
+                "pattern": "Mesh pattern on one side for visibility of contents",
+                "distinct features": "Compact size suitable for small items or as an accessory bag",
+                "brand/text": "No visible brand or text",
+                "soft tags": [
+                    "small bag",
+                    "travel pouch"
+                ],
+                "sdxl_prompt": "\"Stylish yellow and black fabric bag with mesh side pockets, rectangular shape with rounded edges, made of polyester or nylon material. Bright yellow body with navy blue accents, visible text: No brand or text on the surface, distinctive compact size suitable for small items or as an accessory bag.\""
+            },
+            "category": "Bag"
+        }
+    },
+    "path_to_concept": {
+        "data/perva-data/test/bag/alx/1.jpg": "<alx_1>",
+        "data/perva-data/test/bag/ash/1.jpg": "<ash_1>",
+        "data/perva-data/test/bag/bkq/1.jpg": "<bkq_1>",
+        "data/perva-data/test/bag/bxa/1.jpg": "<bxa_1>",
+        "data/perva-data/test/bag/dbi/1.jpg": "<dbi_1>"
+    }
+}

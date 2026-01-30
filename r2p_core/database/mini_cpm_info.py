@@ -3,7 +3,6 @@ import os
 import torch
 import glob
 from PIL import Image
-from transformers import AutoModel, AutoTokenizer
 import requests
 from io import BytesIO
 import json
@@ -11,6 +10,10 @@ import sys
 from filelock import FileLock
 import argparse
 from transformers import CLIPModel, CLIPProcessor
+from transformers import AutoModel, AutoTokenizer
+from defined import categories
+from compute_confidence import ClipScoreCalculator
+
 
 # --- FIX IMPORT ROBUSTO ---
 # Calcola il percorso assoluto della cartella corrente (database)
@@ -23,18 +26,13 @@ utils_path = os.path.join(core_dir, "utils")
 evaluators_path = os.path.join(core_dir, "evaluators")
 models_path = os.path.join(core_dir, "models")  # Aggiungo anche models per sicurezza
 
-# Aggiungili a sys.path se non ci sono già
+
 if utils_path not in sys.path:
     sys.path.append(utils_path)
 if evaluators_path not in sys.path:
     sys.path.append(evaluators_path)
 if models_path not in sys.path:
     sys.path.append(models_path)
-
-# Ora puoi importare i moduli direttamente
-from defined import categories
-from compute_confidence import ClipScoreCalculator
-# ---------------------------
 
 
 def clean_and_load_json(model_output):
@@ -99,13 +97,28 @@ class MiniCPMDescription:
         return image
 
     def get_detailed_input_msgs_person(self, image_test, cat, concept_identifier):
+        """
+        Generate prompt messages for person description.
+        
+        Note: This function requires 'example_database/denisdang.png' as a one-shot example.
+        If the image is not available, the function will skip the one-shot example
+        and use a zero-shot approach instead.
+        """
         answer_format = {
             "general": "a brief description of the person in one sentence.",
             "category": "category of the person",
             "distinct features": "[List of distinct features that makes the person unique]",
         }
         
-        image_1 = self.load_image('example_database/denisdang.png')
+        # Check if example image exists, fallback to zero-shot if not
+        example_path = 'example_database/denisdang.png'
+        use_one_shot = os.path.exists(example_path)
+        
+        if use_one_shot:
+            image_1 = self.load_image(example_path)
+        else:
+            print(f"⚠️ Warning: {example_path} not found. Using zero-shot approach for person.")
+        
         question_example = f"""
         Describe the person in the image that is identified by the concept-identifier, <xyz> and highlight what makes him/her unique.
         Your response MUST follow EXACTLY the JSON format shown below (and nothing else):
@@ -136,11 +149,18 @@ class MiniCPMDescription:
         Any deviation from this format will be considered incorrect.
         """
 
-        msgs = [
-            {'role': 'user', 'content': [image_1, question_example]},
-            {'role': 'assistant', 'content': answer_example},
-            {'role': 'user', 'content': [image_test, question_test]}
-        ]
+        # Build messages based on whether one-shot example is available
+        if use_one_shot:
+            msgs = [
+                {'role': 'user', 'content': [image_1, question_example]},
+                {'role': 'assistant', 'content': answer_example},
+                {'role': 'user', 'content': [image_test, question_test]}
+            ]
+        else:
+            # Zero-shot fallback
+            msgs = [
+                {'role': 'user', 'content': [image_test, question_test]}
+            ]
         return msgs
 
     def get_detailed_input_msgs_household(self, image_test, cat, concept_identifier):

@@ -29,9 +29,10 @@ else:
 
 try:
     # --- IMPORT MODULI PIPELINE ---
-    # Assicurati che verify_generation_r2p sia la versione v3 aggiornata!
+    # V4: Using LLMConfidenceExtractor for reliable logit extraction
     from pipeline2.verify import verify_generation_r2p, _extract_attributes_for_clip
     from pipeline2.r2p_tools import ClipScoreCalculator
+    print("✅ Imported verify V4 with LLMConfidenceExtractor")
     
     # --- IMPORT MINICPM ---
     try:

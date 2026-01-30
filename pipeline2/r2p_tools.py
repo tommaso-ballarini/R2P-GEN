@@ -86,124 +86,244 @@ class ClipScoreCalculator:
     
 
 # =============================================================================
-# SEZIONE 2: CONFIDENCE CALCULATOR (Per Pairwise Reasoning - Eq. 7 & 8)
+# SEZIONE 2: LLM-LEVEL CONFIDENCE EXTRACTOR (THE WORKING SOLUTION)
 # =============================================================================
 
-import torch
-import numpy as np
+from typing import Dict, Tuple, Optional
 
-class ConfidenceCalculator:
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-        
-        # Pre-compute token IDs for common answers
-        self.yes_token_id = self.tokenizer.convert_tokens_to_ids("Yes")
-        self.no_token_id = self.tokenizer.convert_tokens_to_ids("No")
-        
-        # Alternative capitalizations (alcuni tokenizer sono case-sensitive)
-        self.yes_variants = [
-            self.tokenizer.convert_tokens_to_ids(v) 
-            for v in ["Yes", "yes", "YES", "▁Yes", "▁yes"]
-            if v in self.tokenizer.get_vocab()
-        ]
-        self.no_variants = [
-            self.tokenizer.convert_tokens_to_ids(v) 
-            for v in ["No", "no", "NO", "▁No", "▁no"]
-            if v in self.tokenizer.get_vocab()
-        ]
-        
-        print(f"🔧 ConfidenceCalculator initialized:")
-        print(f"   Yes token IDs: {self.yes_variants}")
-        print(f"   No token IDs: {self.no_variants}")
-
-    def calculate_binary_confidence(self, outputs, response_text=None):
+class LLMConfidenceExtractor:
+    """
+    Extracts token-level confidence by intercepting model.llm.generate().
+    This is the PRODUCTION-READY solution for MiniCPM-o-2_6.
+    
+    Works by:
+    1. Patching model.llm.generate() to force output_scores=True
+    2. Capturing the GenerateOutput before .chat() discards it
+    3. Extracting Yes/No probabilities from first-token logits
+    """
+    
+    def __init__(self, model_interface, device="cuda"):
         """
-        Calcola la confidence per risposte binarie Yes/No.
+        Args:
+            model_interface: The MiniCPMModel instance (reasoner.model_interface)
+        """
+        self.model = model_interface.model
+        self.tokenizer = model_interface.tokenizer
+        self.device = device
+        
+        # Verify model structure
+        if not hasattr(self.model, 'llm'):
+            raise ValueError("Model does not have .llm attribute. This extractor is for MiniCPM-o models.")
+        
+        self.llm = self.model.llm
+        
+        # Get Yes/No token IDs (confirmed from diagnostic: Yes=9454, No=2753)
+        self.yes_id = self._get_token_id("Yes")
+        self.no_id = self._get_token_id("No")
+        
+        print(f"🔧 LLMConfidenceExtractor initialized:")
+        print(f"   LLM type: {type(self.llm).__name__}")
+        print(f"   Yes token ID: {self.yes_id}")
+        print(f"   No token ID: {self.no_id}")
+    
+    def _get_token_id(self, word: str) -> int:
+        """Get token ID from vocabulary."""
+        vocab = self.tokenizer.get_vocab()
+        if word in vocab:
+            return vocab[word]
+        # Fallback: encode
+        tokens = self.tokenizer.encode(word, add_special_tokens=False)
+        return tokens[0] if tokens else -1
+    
+    def query_with_confidence(
+        self, 
+        image, 
+        prompt: str,
+        image2 = None,
+        max_new_tokens: int = 5
+    ) -> Tuple[Dict[str, float], str]:
+        """
+        Query the model and extract Yes/No confidence from logits.
         
         Args:
-            outputs: Output del modello (può essere dict, ModelOutput, o altro)
-            response_text: Testo della risposta (usato come fallback)
+            image: Primary image (PIL.Image or path)
+            prompt: Text prompt (should ask for Yes/No answer)
+            image2: Optional second image for pairwise comparison
+            max_new_tokens: Max tokens to generate
             
         Returns:
-            dict con:
-                - yes_confidence: probabilità di "Yes" (0-1)
-                - no_confidence: probabilità di "No" (0-1)
-                - confidence_score: probabilità del token scelto
-                - chosen_answer: "yes" o "no"
-                - method: "logits" o "text_fallback"
+            Tuple of (confidence_dict, response_text)
         """
+        # Load images if paths
+        if isinstance(image, str):
+            image = Image.open(image).convert('RGB')
+        if image2 is not None and isinstance(image2, str):
+            image2 = Image.open(image2).convert('RGB')
         
-        # =====================================================================
-        # STEP 1: Estrai sequences e scores/logits
-        # =====================================================================
-        sequences = None
-        scores = None
+        # Build message
+        if image2 is not None:
+            content = [image, image2, prompt]
+        else:
+            content = [image, prompt]
         
-        # Gestione vari formati di output
-        if isinstance(outputs, dict):
-            sequences = outputs.get("sequences")
-            scores = outputs.get("scores") or outputs.get("logits")
-        elif hasattr(outputs, "sequences"):
-            sequences = outputs.sequences
-            scores = getattr(outputs, "scores", None) or getattr(outputs, "logits", None)
-        elif isinstance(outputs, torch.Tensor):
-            sequences = outputs
-            
-        # Se non abbiamo gli scores, usa il fallback testuale
-        if scores is None:
-            return self._text_fallback(response_text)
+        msgs = [{"role": "user", "content": content}]
         
-        # =====================================================================
-        # STEP 2: Trova l'indice del primo token generato
-        # =====================================================================
+        # Storage for captured output
+        captured = {"output": None}
+        
+        # Store original generate
+        original_generate = self.llm.generate
+        
+        def intercepting_generate(*args, **kwargs):
+            # Force score output
+            kwargs['output_scores'] = True
+            kwargs['return_dict_in_generate'] = True
+            result = original_generate(*args, **kwargs)
+            captured["output"] = result
+            return result
+        
         try:
-            # Gli scores sono una tupla/lista di tensors, uno per ogni step di generazione
-            # Prendiamo il PRIMO step (la prima parola generata)
-            first_token_logits = scores[0]  # Shape: [batch_size, vocab_size]
+            # Patch
+            self.llm.generate = intercepting_generate
             
-            # Se batch_size > 1, prendiamo il primo elemento
-            if first_token_logits.dim() > 1:
-                first_token_logits = first_token_logits[0]  # Shape: [vocab_size]
+            # Call chat normally
+            response_text = self.model.chat(
+                msgs=msgs,
+                tokenizer=self.tokenizer,
+                max_new_tokens=max_new_tokens,
+                sampling=False  # Greedy for consistency
+            )
             
-            # =====================================================================
-            # STEP 3: Calcola probabilità per Yes e No
-            # =====================================================================
+            # Handle OmniOutput or string
+            if hasattr(response_text, 'text'):
+                response_text = response_text.text
+            elif not isinstance(response_text, str):
+                response_text = str(response_text)
             
-            # Ottieni i logits per tutti i token Yes/No variants
-            yes_logits = [first_token_logits[tid].item() for tid in self.yes_variants]
-            no_logits = [first_token_logits[tid].item() for tid in self.no_variants]
+            # Extract confidence from captured output
+            output = captured["output"]
             
-            # Prendi il massimo per ogni categoria (gestisce varianti)
-            max_yes_logit = max(yes_logits) if yes_logits else -float('inf')
-            max_no_logit = max(no_logits) if no_logits else -float('inf')
+            if output is not None and hasattr(output, 'scores') and output.scores:
+                confidence = self._extract_confidence_from_scores(output.scores)
+                confidence['method'] = 'logits'
+                confidence['response'] = response_text
+            else:
+                # Fallback to text parsing
+                confidence = self._text_fallback(response_text)
+                confidence['response'] = response_text
             
-            # Calcola softmax solo su Yes e No (binary choice)
-            logits_tensor = torch.tensor([max_yes_logit, max_no_logit])
-            probs = torch.softmax(logits_tensor, dim=0)
-            
-            yes_prob = probs[0].item()
-            no_prob = probs[1].item()
-            
-            # Determina la risposta scelta
-            chosen = "yes" if yes_prob > no_prob else "no"
-            confidence = max(yes_prob, no_prob)
-            
-            return {
-                "yes_confidence": yes_prob,
-                "no_confidence": no_prob,
-                "confidence_score": confidence,
-                "chosen_answer": chosen,
-                "method": "logits",
-                "yes_logit": max_yes_logit,
-                "no_logit": max_no_logit
-            }
+            return confidence, response_text
             
         except Exception as e:
-            print(f"⚠️ Error in logit-based confidence calculation: {e}")
-            return self._text_fallback(response_text)
+            print(f"⚠️ LLMConfidenceExtractor error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'yes_confidence': 0.5,
+                'no_confidence': 0.5,
+                'method': 'error',
+                'error': str(e)
+            }, f"Error: {e}"
+            
+        finally:
+            # Always restore original
+            self.llm.generate = original_generate
+    
+    def _extract_confidence_from_scores(self, scores: tuple) -> Dict[str, float]:
+        """
+        Extract Yes/No confidence from the first token's logits.
+        
+        Args:
+            scores: Tuple of tensors, one per generated token
+        """
+        # Get first token logits
+        first_logits = scores[0]  # Shape: [batch_size, vocab_size]
+        
+        if first_logits.dim() > 1:
+            first_logits = first_logits[0]  # [vocab_size]
+        
+        # Get full probability distribution
+        probs = torch.softmax(first_logits, dim=0)
+        
+        # Extract Yes/No probabilities
+        yes_prob = probs[self.yes_id].item() if self.yes_id >= 0 else 0.0
+        no_prob = probs[self.no_id].item() if self.no_id >= 0 else 0.0
+        
+        # Also get raw logits for debugging
+        yes_logit = first_logits[self.yes_id].item() if self.yes_id >= 0 else 0.0
+        no_logit = first_logits[self.no_id].item() if self.no_id >= 0 else 0.0
+        
+        # Normalize to Yes/No space (binary)
+        total = yes_prob + no_prob
+        if total > 0:
+            yes_norm = yes_prob / total
+            no_norm = no_prob / total
+        else:
+            yes_norm = no_norm = 0.5
+        
+        return {
+            'yes_confidence': yes_norm,
+            'no_confidence': no_norm,
+            'raw_yes_prob': yes_prob,
+            'raw_no_prob': no_prob,
+            'yes_logit': yes_logit,
+            'no_logit': no_logit
+        }
+    
+    def _text_fallback(self, response: str) -> Dict[str, float]:
+        """
+        Graduated text-based fallback when logits unavailable.
+        More nuanced than binary 0.95/0.05.
+        """
+        if not response:
+            return {'yes_confidence': 0.5, 'no_confidence': 0.5, 'method': 'text_empty'}
+        
+        response = response.lower().strip()
+        words = response.split()
+        first_word = words[0] if words else ""
+        
+        # Check for definitive first word
+        if first_word in ["yes", "yes.", "yes,"]:
+            return {'yes_confidence': 0.85, 'no_confidence': 0.15, 'method': 'text_definitive'}
+        elif first_word in ["no", "no.", "no,"]:
+            return {'yes_confidence': 0.15, 'no_confidence': 0.85, 'method': 'text_definitive'}
+        
+        # Check for presence anywhere in first 30 chars
+        snippet = response[:30]
+        if "yes" in snippet and "no" not in snippet:
+            return {'yes_confidence': 0.70, 'no_confidence': 0.30, 'method': 'text_contains'}
+        elif "no" in snippet and "yes" not in snippet:
+            return {'yes_confidence': 0.30, 'no_confidence': 0.70, 'method': 'text_contains'}
+        
+        # Hedging language
+        if any(w in response for w in ["partially", "somewhat", "maybe", "possibly", "unclear", "not sure"]):
+            return {'yes_confidence': 0.50, 'no_confidence': 0.50, 'method': 'text_hedging'}
+        
+        # Default ambiguous
+        return {'yes_confidence': 0.50, 'no_confidence': 0.50, 'method': 'text_ambiguous'}
+
+
+# =============================================================================
+# LEGACY: ConfidenceCalculator (kept for backwards compatibility)
+# =============================================================================
+
+class ConfidenceCalculator:
+    """
+    DEPRECATED: Use LLMConfidenceExtractor instead.
+    Kept only for backwards compatibility with existing code.
+    """
+    
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.yes_id = 9454  # Hardcoded for MiniCPM
+        self.no_id = 2753
+        print("⚠️ ConfidenceCalculator is DEPRECATED. Use LLMConfidenceExtractor for reliable logit extraction.")
+
+    def calculate_binary_confidence(self, outputs, response_text=None):
+        """Fallback implementation - always uses text parsing."""
+        return self._text_fallback(response_text)
     
     def _text_fallback(self, response_text):
-        """Fallback basato su parsing del testo quando i logits non sono disponibili."""
         if not response_text:
             return {
                 "yes_confidence": 0.5,
@@ -214,28 +334,25 @@ class ConfidenceCalculator:
             }
         
         text_lower = response_text.lower().strip()
-        
-        # Check primi 10 caratteri per risposta immediata
         first_chars = text_lower[:10]
         
         if "yes" in first_chars:
             return {
-                "yes_confidence": 0.95,
-                "no_confidence": 0.05,
-                "confidence_score": 0.95,
+                "yes_confidence": 0.85,
+                "no_confidence": 0.15,
+                "confidence_score": 0.85,
                 "chosen_answer": "yes",
                 "method": "text_fallback"
             }
         elif "no" in first_chars:
             return {
-                "yes_confidence": 0.05,
-                "no_confidence": 0.95,
-                "confidence_score": 0.95,
+                "yes_confidence": 0.15,
+                "no_confidence": 0.85,
+                "confidence_score": 0.85,
                 "chosen_answer": "no",
                 "method": "text_fallback"
             }
         else:
-            # Ambiguous
             return {
                 "yes_confidence": 0.5,
                 "no_confidence": 0.5,
@@ -243,25 +360,6 @@ class ConfidenceCalculator:
                 "chosen_answer": "unknown",
                 "method": "text_fallback_ambiguous"
             }
-    
-    # =========================================================================
-    # METODI LEGACY (Mantieni per compatibilità, ma non usare)
-    # =========================================================================
-    
-    def calculate_pairwise_confidence(self, outputs):
-        """
-        DEPRECATED: Usa calculate_binary_confidence() invece.
-        Mantenuto solo per backward compatibility.
-        """
-        return self.calculate_binary_confidence(outputs)
-    
-    def compute_confidence(self, outputs, candidate_indices, token_labels):
-        """
-        DEPRECATED: Metodo originale R2P, troppo complesso per questo use case.
-        """
-        # Implementazione originale mantenuta per compatibilità...
-        # (puoi mantenere il codice esistente se serve per altri scopi)
-        pass
             
 # =============================================================================
 # SEZIONE 3: MODEL ADAPTERS (Per Formattazione Prompt Multi-Immagine)

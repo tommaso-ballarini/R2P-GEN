@@ -91,13 +91,28 @@ class Qwen2VLDescription:
         return image
 
     def get_detailed_input_msgs_person(self, image_test, cat, concept_identifier):
+        """
+        Generate prompt messages for person description.
+        
+        Note: This function requires 'example_database/denisdang.png' as a one-shot example.
+        If the image is not available, the function will skip the one-shot example
+        and use a zero-shot approach instead.
+        """
         answer_format = {
             "general": "a brief description of the person in one sentence.",
             "category": "category of the person",
             "distinct features": "[List of distinct features that makes the person unique]",
         }
         
-        image_1 = self.load_image('example_database/denisdang.png')
+        # Check if example image exists, fallback to zero-shot if not
+        example_path = 'example_database/denisdang.png'
+        use_one_shot = os.path.exists(example_path)
+        
+        if use_one_shot:
+            image_1 = self.load_image(example_path)
+        else:
+            print(f"⚠️ Warning: {example_path} not found. Using zero-shot approach for person.")
+        
         question_example = f"""
         Describe the person in the image that is identified by the concept-identifier, <xyz> and highlight what makes him/her unique.
         Your response MUST follow EXACTLY the JSON format shown below (and nothing else):
@@ -128,26 +143,39 @@ class Qwen2VLDescription:
         Any deviation from this format will be considered incorrect.
         """
 
-        msgs = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image_1},
-                    {"type": "text", "text": question_example}
-                ]
-            },
-            {
-                "role": "assistant",
-                "content": answer_example
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image_test},
-                    {"type": "text", "text": question_test}
-                ]
-            }
-        ]
+        # Build messages based on whether one-shot example is available
+        if use_one_shot:
+            msgs = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image_1},
+                        {"type": "text", "text": question_example}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": answer_example
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image_test},
+                        {"type": "text", "text": question_test}
+                    ]
+                }
+            ]
+        else:
+            # Zero-shot fallback
+            msgs = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image_test},
+                        {"type": "text", "text": question_test}
+                    ]
+                }
+            ]
         return msgs
 
     def get_detailed_input_msgs_household(self, image_test, cat, concept_identifier):

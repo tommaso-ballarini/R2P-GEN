@@ -73,8 +73,11 @@ def run_r2p_gen_pipeline(target_image_path, use_refinement=True):
         
     else:
         # Modalità single-shot (per confronto)
+        # Updated for V5 verify API
         from generate import generate_image
-        from verify import verify_generation
+        from pipeline.verify import verify_generation_r2p
+        from pipeline.r2p_tools import ClipScoreCalculator
+        from r2p_core.models.mini_cpm_reasoning import MiniCPMReasoning
         
         final_image = f"{output_dir}/singleshot_{Path(target_image_path).stem}.png"
         
@@ -85,18 +88,41 @@ def run_r2p_gen_pipeline(target_image_path, use_refinement=True):
             iteration=1
         )
         
-        final_score, _ = verify_generation(
-            final_image,
-            target_image_path,
-            fingerprints_dict
+        # Load models for V5 verify
+        print("   Loading verification models...")
+        reasoner = MiniCPMReasoning(
+            model_path=Config.VLM_MODEL,
+            device="cuda",
+            torch_dtype=torch.float16 if Config.USE_FP16 else torch.float32,
+            attn_implementation="sdpa",
+            seed=Config.SEED
         )
+        clip_calculator = ClipScoreCalculator(device="cuda")
+        
+        verification_result = verify_generation_r2p(
+            reasoner=reasoner,
+            clip_calculator=clip_calculator,
+            gen_image_path=final_image,
+            ref_image_path=target_image_path,
+            fingerprints=fingerprints_dict
+        )
+        
+        final_score = verification_result["score"]
+        is_verified = verification_result["is_verified"]
+        
+        # Cleanup
+        del reasoner
+        del clip_calculator
+        cleanup_gpu()
         
         iterations_used = 1
         result = {
             "best_image": final_image,
             "best_score": final_score,
+            "is_verified": is_verified,
             "iterations": 1,
-            "history": []
+            "history": [],
+            "verification": verification_result
         }
     
     # ═══════════════════════════════════════════════════════

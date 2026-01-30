@@ -9,7 +9,7 @@ import torch
 from pathlib import Path
 from config import Config
 from pipeline.utils2 import cleanup_gpu, ensure_output_dir, get_iteration_filename, print_memory_stats
-from generate import generate_image
+from pipeline.generate import generate_image, cleanup_generator_cache
 from pipeline.verify import verify_generation_r2p
 from pipeline.r2p_tools import ClipScoreCalculator
 
@@ -205,6 +205,7 @@ def iterative_refinement(reference_image_path, fingerprints_dict, output_dir="ou
     # === CLEANUP FINALE ===
     del reasoner
     del clip_calculator
+    cleanup_generator_cache()  # Clean up cached SDXL pipeline
     cleanup_gpu()
     
     # === REPORT FINALE ===

@@ -546,6 +546,53 @@ class DatabaseBuilder:
         with open(self.output_path, "w") as f:
             json.dump(self.database_data, f, indent=4)
     
+    def extract_single_image(self, image_path: str, category: str = None) -> dict:
+        """
+        Extract fingerprints from a single image.
+        
+        This is a convenience method for processing individual images
+        without going through the full database pipeline.
+        
+        Args:
+            image_path: Path to the image file
+            category: Optional category hint (e.g., 'bag', 'shoe')
+            
+        Returns:
+            dict: Fingerprints including sdxl_prompt, or None if failed
+        """
+        # Initialize extractor if not already done
+        if self.extractor is None:
+            print("   📦 Loading MiniCPM for extraction...")
+            from r2p_core.database.mini_cpm_info import MiniCPMDescription
+            self.extractor = MiniCPMDescription(model_path=self.model_path, device=self.device)
+            self.mock_args = MockArgs()
+        
+        try:
+            # Extract fingerprints
+            cat_arg = None if self.use_clip_category else category
+            concept_id = os.path.splitext(os.path.basename(image_path))[0]
+            
+            json_str = self.extractor.generate_caption(
+                image_file=image_path,
+                cat=cat_arg,
+                concept_identifier=concept_id,
+                args=self.mock_args
+            )
+            
+            # Clean and parse JSON
+            json_str = json_str.replace('```json', '').replace('```', '').strip()
+            fingerprints = json.loads(json_str)
+            
+            # Generate SDXL prompt
+            sdxl_prompt = self._generate_sdxl_prompt(fingerprints)
+            fingerprints["sdxl_prompt"] = sdxl_prompt
+            
+            return fingerprints
+            
+        except Exception as e:
+            print(f"   ❌ Extraction failed: {e}")
+            return None
+    
     def build_database(self):
         """
         Execute the complete database building pipeline following R2P workflow.

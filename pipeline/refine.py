@@ -1,79 +1,96 @@
 # refine.py
 """
-Iterative Refinement Loop con Feedback del VLM Judge
-Questo è il CORE del sistema R2P-GEN
+Iterative Refinement Loop con Feedback VLM (verify.py V5)
 
-Updated for Verify V5 API
+ARCHITETTURA MEMORY-EFFICIENT:
+==============================
+Per GPU con 24GB (L4), usiamo "model swapping":
+- FASE GENERAZIONE: Carica SDXL (~8GB) → genera → scarica
+- FASE VERIFICA: Carica MiniCPM+CLIP (~18GB) → verifica → scarica
+- Ripeti se necessario
+
+Questo approccio è più lento ma permette di usare modelli grandi
+su GPU limitate. In letteratura: "Model Swapping" o "Sequential Loading".
+
+MODELLI USATI:
+- verify.py (verify_generation_r2p) → MiniCPM + CLIP (guida refinement)
+- Final Judge → Chiamare separatamente da judge.py (Qwen2.5-VL)
+
+LETTERATURA:
+- Negative Prompt refinement: CFG (Ho & Salimans, 2022), SDXL (Podell, 2023)
+- VQA-based verification: TIFA (Hu et al., ICCV 2023)
+- Iterative refinement: Self-Correcting Diffusion (Feng, 2024)
+- Model Swapping: Common in production with limited VRAM
 """
+
+import os
+import sys
+import json
+import gc
 import torch
 from pathlib import Path
+from PIL import Image
+
+# Path setup
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from config import Config
-from pipeline.utils2 import cleanup_gpu, ensure_output_dir, get_iteration_filename, print_memory_stats
-from pipeline.generate import generate_image, cleanup_generator_cache
+from pipeline.utils2 import cleanup_gpu, ensure_output_dir, get_iteration_filename
 from pipeline.verify import verify_generation_r2p
-from pipeline.r2p_tools import ClipScoreCalculator
-
-# Import reasoner - needed for V5 verify
-import sys
-import os
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(current_dir, '..'))
-from r2p_core.models.mini_cpm_reasoning import MiniCPMReasoning
 
 
-def iterative_refinement(reference_image_path, fingerprints_dict, output_dir="output"):
-    """
-    Loop di raffinamento iterativo con feedback VLM
+def _full_cleanup():
+    """Force complete VRAM cleanup between model loads."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    cleanup_gpu()
+
+
+def _load_generator(temp_db_path: str, output_dir: str):
+    """Load SDXL + IP-Adapter generator."""
+    from pipeline.generate import Generator
     
-    Algoritmo:
-    1. Genera immagine candidata
-    2. VLM Judge verifica attributi (V5: uses CLIP + VLM + Pairwise)
-    3. Se accuracy < target:
-       - Identifica attributi mancanti (from failed_attributes)
-       - Aggiorna negative prompt
-       - Rigenera (max MAX_ITERATIONS volte)
-    4. Ritorna best result
+    generator = Generator(
+        database_path=temp_db_path,
+        output_dir=output_dir
+    )
     
-    Args:
-        reference_image_path: Immagine target
-        fingerprints_dict: Attributi da riprodurre
-        output_dir: Cartella output
+    if not generator._initialize_pipeline():
+        return None
     
-    Returns:
-        dict: {
-            "best_image": path,
-            "best_score": float,
-            "iterations": int,
-            "history": [...]
-        }
-    """
-    print(f"\n{'='*60}")
-    print(f"🔁 ITERATIVE REFINEMENT LOOP (V5)")
-    print(f"{'='*60}")
-    print(f"   Max Iterazioni: {Config.MAX_ITERATIONS}")
-    print(f"   Target Accuracy: {Config.TARGET_ACCURACY:.0%}")
-    print(f"   Min Improvement: {Config.MIN_IMPROVEMENT:.0%}")
+    return generator
+
+
+def _unload_generator(generator):
+    """Completely unload generator from VRAM."""
+    if generator is None:
+        return
     
-    ensure_output_dir(output_dir)
+    if hasattr(generator, 'pipe') and generator.pipe is not None:
+        # Unload all pipeline components
+        if hasattr(generator.pipe, 'to'):
+            try:
+                generator.pipe.to('cpu')
+            except:
+                pass
+        del generator.pipe
+        generator.pipe = None
     
-    # Stato del loop
-    best_image_path = None
-    best_score = 0.0
-    best_verification = None
-    iteration = 0
+    del generator
+    _full_cleanup()
+
+
+def _load_verifier():
+    """Load MiniCPM + CLIP for verification."""
+    from r2p_core.models.mini_cpm_reasoning import MiniCPMReasoning
+    from pipeline.r2p_tools import ClipScoreCalculator
     
-    # Negative prompt dinamico
-    negative_additions = []
-    
-    # Storia iterazioni
-    history = []
-    
-    # =========================================================================
-    # INITIALIZE MODELS FOR V5 VERIFY
-    # =========================================================================
-    print(f"\n   📦 Loading verification models...")
-    
-    # Load VLM Reasoner (MiniCPM)
+    print("   📦 Loading MiniCPM Reasoner...")
     reasoner = MiniCPMReasoning(
         model_path=Config.VLM_MODEL,
         device="cuda",
@@ -82,215 +99,422 @@ def iterative_refinement(reference_image_path, fingerprints_dict, output_dir="ou
         seed=Config.SEED
     )
     
-    # Load CLIP Calculator
+    print("   📦 Loading CLIP Calculator...")
     clip_calculator = ClipScoreCalculator(device="cuda")
     
-    print(f"   ✓ Models loaded")
-    # =========================================================================
+    return reasoner, clip_calculator
+
+
+def _unload_verifier(reasoner, clip_calculator):
+    """Completely unload verifier models from VRAM."""
+    if reasoner is not None:
+        if hasattr(reasoner, 'model'):
+            del reasoner.model
+        if hasattr(reasoner, 'tokenizer'):
+            del reasoner.tokenizer
+        del reasoner
     
-    while iteration < Config.MAX_ITERATIONS:
+    if clip_calculator is not None:
+        if hasattr(clip_calculator, 'model'):
+            del clip_calculator.model
+        if hasattr(clip_calculator, 'processor'):
+            del clip_calculator.processor
+        del clip_calculator
+    
+    _full_cleanup()
+
+
+def iterative_refinement(
+    reference_image_path: str,
+    fingerprints_dict: dict,
+    output_dir: str = "output",
+    # Loop parameters
+    max_iterations: int = None,
+    target_accuracy: float = None,
+    min_improvement: float = None,
+    # Verify V5 parameters (passed to verify_generation_r2p)
+    vlm_high_confidence: float = 0.85,
+    vlm_low_confidence: float = 0.40,
+    worst_k_threshold: float = 0.50,
+):
+    """
+    Loop di raffinamento iterativo con feedback VLM (verify.py V5).
+    
+    MEMORY-EFFICIENT: Usa "model swapping" per GPU con 24GB.
+    Carica SDXL per generare, poi lo scarica e carica MiniCPM per verificare.
+    
+    Questo modulo è SOLO il loop di refinement. Il Final Judge va
+    chiamato separatamente dopo usando judge.py.
+    
+    Args:
+        reference_image_path: Immagine target da riprodurre
+        fingerprints_dict: Attributi estratti (Fingerprint List)
+        output_dir: Cartella output
+        max_iterations: Override Config.MAX_ITERATIONS
+        target_accuracy: Override Config.TARGET_ACCURACY  
+        min_improvement: Override Config.MIN_IMPROVEMENT
+        vlm_high_confidence: Soglia alta per auto-pass (V5)
+        vlm_low_confidence: Soglia bassa per auto-fail (V5)
+        worst_k_threshold: Soglia per worst-k detection (V5)
+    
+    Returns:
+        dict: {
+            "best_image": path,
+            "best_score": float,
+            "is_verified": bool,
+            "failed_attributes": list,
+            "iterations": int,
+            "verification": dict (ultimo verify result),
+            "history": [...]
+        }
+    """
+    # Config with overrides
+    max_iter = max_iterations or Config.MAX_ITERATIONS
+    target_acc = target_accuracy or Config.TARGET_ACCURACY
+    min_impr = min_improvement or Config.MIN_IMPROVEMENT
+    
+    print(f"\n{'='*60}")
+    print(f"🔁 ITERATIVE REFINEMENT LOOP (verify V5)")
+    print(f"{'='*60}")
+    print(f"   Reference: {Path(reference_image_path).name}")
+    print(f"   Max Iterations: {max_iter}")
+    print(f"   Target Accuracy: {target_acc:.0%}")
+    print(f"\n   📋 Architecture:")
+    print(f"      Refinement: MiniCPM + CLIP (verify_generation_r2p)")
+    print(f"      Final Judge: Call judge.py SEPARATELY after this!")
+    print(f"\n   🧠 Memory Mode: MODEL SWAPPING (for 24GB GPU)")
+    print(f"      → SDXL loaded only during generation")
+    print(f"      → MiniCPM+CLIP loaded only during verification")
+    
+    ensure_output_dir(output_dir)
+    
+    # === CREATE TEMP DATABASE ===
+    temp_db = {
+        "concept_dict": {
+            "refine_target": {
+                "name": Path(reference_image_path).stem,
+                "image": [reference_image_path],
+                "info": fingerprints_dict
+            }
+        }
+    }
+    temp_db_path = os.path.join(output_dir, "_temp_refine_db.json")
+    with open(temp_db_path, 'w') as f:
+        json.dump(temp_db, f)
+    
+    # === STATE VARIABLES ===
+    best_image_path = None
+    best_score = 0.0
+    best_verification = None
+    iteration = 0
+    
+    # Negative prompt dinamico (Prompt Reweighting - CFG/SDXL literature)
+    negative_additions = []
+    
+    # Storia iterazioni
+    history = []
+    
+    # Get SDXL prompt
+    sdxl_prompt = fingerprints_dict.get("sdxl_prompt", fingerprints_dict.get("description", ""))
+    if not sdxl_prompt:
+        print("   ⚠️  No SDXL prompt found, using generic")
+        sdxl_prompt = "high quality product photo"
+    
+    # === REFINEMENT LOOP ===
+    while iteration < max_iter:
         iteration += 1
         
         print(f"\n{'─'*60}")
-        print(f"🔄 ITERAZIONE {iteration}/{Config.MAX_ITERATIONS}")
+        print(f"🔄 ITERATION {iteration}/{max_iter}")
         print(f"{'─'*60}")
         
-        # === STEP 1: GENERAZIONE ===
+        # ═══════════════════════════════════════════════════════
+        # PHASE A: GENERATION (load SDXL, generate, unload)
+        # ═══════════════════════════════════════════════════════
         output_filename = get_iteration_filename(
-            f"{output_dir}/candidate_{Path(reference_image_path).stem}.png",
+            os.path.join(output_dir, f"candidate_{Path(reference_image_path).stem}.png"),
             iteration
         )
         
-        # Costruisci negative prompt cumulativo
-        current_negative = Config.NEGATIVE_BASE
+        # Costruisci negative prompt cumulativo (letteratura: Prompt Reweighting)
+        current_negative = Config.NEGATIVE_PROMPT
         if negative_additions:
-            current_negative += ", " + ", ".join(negative_additions)
-            print(f"   🚫 Negative aggiunti: {', '.join(negative_additions)}")
+            current_negative += ", " + ", ".join(negative_additions[-5:])  # Keep last 5
+            print(f"   🚫 Negatives: {', '.join(negative_additions[-3:])}")
         
-        # Genera
+        generator = None
         try:
-            generate_image(
-                reference_image_path,
-                fingerprints_dict,
-                output_path=output_filename,
-                negative_prompt=current_negative,
-                iteration=iteration
+            print(f"   📦 Loading SDXL + IP-Adapter...")
+            generator = _load_generator(temp_db_path, output_dir)
+            
+            if generator is None:
+                print("   ❌ Failed to initialize SDXL pipeline")
+                break
+            
+            # Load reference image
+            ref_img = Image.open(reference_image_path).convert("RGB")
+            ref_img = ref_img.resize(
+                (Config.REFERENCE_IMAGE_SIZE, Config.REFERENCE_IMAGE_SIZE), 
+                Image.Resampling.LANCZOS
             )
+            
+            # Generate with SDXL + IP-Adapter
+            print(f"   🎨 Generating candidate...")
+            result = generator.pipe(
+                prompt=sdxl_prompt,
+                negative_prompt=current_negative,
+                ip_adapter_image=ref_img,
+                num_inference_steps=Config.NUM_INFERENCE_STEPS,
+                guidance_scale=Config.GUIDANCE_SCALE,
+                height=Config.OUTPUT_IMAGE_SIZE,
+                width=Config.OUTPUT_IMAGE_SIZE,
+                generator=torch.Generator(device=Config.DEVICE).manual_seed(Config.SEED + iteration)
+            ).images[0]
+            
+            result.save(output_filename)
+            print(f"   ✅ Generated: {Path(output_filename).name}")
+            
+            # CRITICAL: Unload SDXL before loading verifier
+            print(f"   📤 Unloading SDXL to free VRAM...")
+            _unload_generator(generator)
+            generator = None
+            
         except Exception as e:
-            print(f"   ❌ Errore generazione: {e}")
+            print(f"   ❌ Generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            # Try to cleanup anyway
+            if generator is not None:
+                try:
+                    _unload_generator(generator)
+                except:
+                    pass
+            _full_cleanup()
             break
         
-        # === STEP 2: VERIFICA (V5 API) ===
-        verification = verify_generation_r2p(
-            reasoner=reasoner,
-            clip_calculator=clip_calculator,
-            gen_image_path=output_filename,
-            ref_image_path=reference_image_path,
-            fingerprints=fingerprints_dict
-        )
+        # ═══════════════════════════════════════════════════════
+        # PHASE B: VERIFICATION (load MiniCPM+CLIP, verify, unload)
+        # ═══════════════════════════════════════════════════════
+        print(f"   ⚖️  Verifying with MiniCPM + CLIP (V5)...")
         
-        # V5 returns is_verified (bool) and score (float)
-        # Convert to accuracy-style metric for compatibility
+        reasoner = None
+        clip_calculator = None
+        try:
+            reasoner, clip_calculator = _load_verifier()
+            
+            verification = verify_generation_r2p(
+                reasoner=reasoner,
+                clip_calculator=clip_calculator,
+                gen_image_path=output_filename,
+                ref_image_path=reference_image_path,
+                fingerprints=fingerprints_dict,
+                vlm_high_confidence=vlm_high_confidence,
+                vlm_low_confidence=vlm_low_confidence,
+                worst_k_vlm_threshold=worst_k_threshold
+            )
+            
+            # CRITICAL: Unload verifier before next iteration
+            print(f"   📤 Unloading verifier to free VRAM...")
+            _unload_verifier(reasoner, clip_calculator)
+            reasoner = None
+            clip_calculator = None
+            
+        except Exception as e:
+            print(f"   ❌ Verification error: {e}")
+            import traceback
+            traceback.print_exc()
+            if reasoner is not None or clip_calculator is not None:
+                try:
+                    _unload_verifier(reasoner, clip_calculator)
+                except:
+                    pass
+            _full_cleanup()
+            # Continue with partial result
+            verification = {"score": 0, "is_verified": False, "failed_attributes": [], "method": "error"}
+        
+        # Extract results
         current_score = verification["score"]
         is_verified = verification["is_verified"]
         failed_attrs = verification.get("failed_attributes", [])
+        method = verification.get("method", "unknown")
         
-        # Build missing list from failed_attributes for history compatibility
-        # V5 failed_attributes is a list of attribute strings
-        missing_list = [(attr, attr) for attr in failed_attrs]  # (key, value) format
-        present_count = len(verification.get("vlm_history", [])) - len(failed_attrs)
+        print(f"\n   📊 Score: {current_score:.2f} | Verified: {is_verified} | Method: {method}")
         
-        # Salva nella storia
+        # Save to history
         history.append({
             "iteration": iteration,
             "image": output_filename,
             "score": current_score,
             "is_verified": is_verified,
-            "method": verification.get("method", "unknown"),
-            "failed_attributes": failed_attrs,
+            "method": method,
+            "failed_attributes": failed_attrs.copy() if failed_attrs else [],
             "reason": verification.get("reason", "")
         })
         
-        total_attrs = len(verification.get("vlm_history", [])) // 2  # Rough estimate (single + pairwise)
-        if total_attrs == 0:
-            total_attrs = max(1, len(failed_attrs))
-        
-        print(f"\n   📊 Score: {current_score:.2f} | Verified: {is_verified} | Method: {verification.get('method', '?')}")
-        
-        # === STEP 3: AGGIORNA BEST ===
+        # === UPDATE BEST ===
         improvement = current_score - best_score
         
         if current_score > best_score:
             best_score = current_score
             best_image_path = output_filename
             best_verification = verification
-            print(f"   🏆 NUOVO BEST! (+{improvement:.2f})")
+            print(f"   🏆 NEW BEST! Score: {best_score:.2f} (+{improvement:.2f})")
         else:
-            print(f"   📉 Nessun miglioramento ({improvement:+.2f})")
+            print(f"   📉 No improvement ({improvement:+.2f})")
         
-        # === STEP 4: CONDIZIONI DI USCITA ===
+        # === EXIT CONDITIONS ===
         
-        # Successo: verification passed
+        # Success: verification passed (is_verified from V5)
         if is_verified:
-            print(f"\n   ✅ VERIFIED! Method: {verification.get('method', '?')}")
+            print(f"\n   ✅ VERIFIED! Method: {method}")
             break
         
-        # Convergenza: nessun miglioramento significativo
-        if iteration > 1 and improvement < Config.MIN_IMPROVEMENT:
-            print(f"\n   🔻 Convergenza: miglioramento < {Config.MIN_IMPROVEMENT:.2f}")
+        # Convergence: no significant improvement
+        if iteration > 1 and improvement < min_impr:
+            print(f"\n   🔻 Convergence: improvement {improvement:.3f} < {min_impr}")
             break
         
-        # Nessun attributo mancante (caso edge)
+        # No failed attributes to fix (edge case)
         if not failed_attrs:
-            print(f"\n   ✅ Nessun attributo mancante rilevato")
+            print(f"\n   ✅ No failed attributes detected")
             break
         
-        # === STEP 5: PREPARA PROSSIMA ITERAZIONE ===
-        if iteration < Config.MAX_ITERATIONS:
-            print(f"\n   🔧 Preparazione iterazione {iteration + 1}:")
-            print(f"      Attributi da correggere: {len(failed_attrs)}")
+        # === PROMPT REWEIGHTING (letteratura: CFG, SDXL) ===
+        if iteration < max_iter:
+            print(f"\n   🔧 Prompt Reweighting for iteration {iteration + 1}:")
+            print(f"      Failed attributes: {len(failed_attrs)}")
             
-            # Analizza attributi mancanti e aggiorna negative prompt
-            # V5: failed_attrs is list of strings, convert to (key, value) format
-            new_negatives = build_negative_from_missing(missing_list)
+            # Build negative prompts from failed attributes
+            new_negatives = build_negative_from_failed(failed_attrs)
             
             for neg in new_negatives:
                 if neg not in negative_additions:
                     negative_additions.append(neg)
-                    print(f"      • Aggiungo negative: '{neg}'")
-            
-            # Cleanup tra iterazioni
-            cleanup_gpu()
+                    print(f"      + Negative: '{neg}'")
     
-    # === CLEANUP FINALE ===
-    del reasoner
-    del clip_calculator
-    cleanup_generator_cache()  # Clean up cached SDXL pipeline
-    cleanup_gpu()
+    # === CLEANUP ===
+    _full_cleanup()
     
-    # === REPORT FINALE ===
+    # Remove temp database
+    if os.path.exists(temp_db_path):
+        os.remove(temp_db_path)
+    
+    # === FINAL REPORT ===
+    final_failed = best_verification.get("failed_attributes", []) if best_verification else []
+    
     print(f"\n{'='*60}")
-    print(f"🏁 REFINEMENT COMPLETATO (V5)")
+    print(f"🏁 REFINEMENT COMPLETED")
     print(f"{'='*60}")
     print(f"   Best Image: {Path(best_image_path).name if best_image_path else 'None'}")
     print(f"   Best Score: {best_score:.2f}")
-    print(f"   Iterazioni: {iteration}")
+    print(f"   Verified: {best_verification.get('is_verified', False) if best_verification else False}")
+    print(f"   Iterations: {iteration}")
+    print(f"   Method: {best_verification.get('method', 'N/A') if best_verification else 'N/A'}")
     
-    if best_verification:
-        print(f"\n   Method: {best_verification.get('method', 'unknown')}")
-        print(f"   Verified: {best_verification.get('is_verified', False)}")
-        print(f"   Reason: {best_verification.get('reason', 'N/A')}")
-        
-        failed = best_verification.get('failed_attributes', [])
-        if failed:
-            print(f"\n   ❌ Failed Attributes ({len(failed)}):")
-            for attr in failed[:5]:
-                print(f"      • {attr[:50]}...")
-            if len(failed) > 5:
-                print(f"      ... and {len(failed) - 5} more")
+    if final_failed:
+        print(f"\n   ❌ Failed Attributes ({len(final_failed)}):")
+        for attr in final_failed[:5]:
+            print(f"      • {attr[:50]}...")
+        if len(final_failed) > 5:
+            print(f"      ... and {len(final_failed) - 5} more")
     
+    print(f"\n   💡 Next step: Call judge.py for independent Final Judge!")
     print(f"{'='*60}")
     
     return {
         "best_image": best_image_path,
         "best_score": best_score,
+        "is_verified": best_verification.get("is_verified", False) if best_verification else False,
+        "failed_attributes": final_failed,
         "iterations": iteration,
-        "history": history,
-        "verification": best_verification
+        "verification": best_verification,
+        "history": history
     }
 
 
-def build_negative_from_missing(missing_attributes):
+def build_negative_from_failed(failed_attributes: list) -> list:
     """
-    Costruisce negative prompts da attributi mancanti
+    Costruisce negative prompts da attributi falliti (dal verify V5).
     
-    Strategia:
-    - Se manca "color: red" → aggiungi "not red, wrong color"
-    - Se manca "brand: Nike" → aggiungi "without logo, wrong brand"
+    Letteratura:
+    - Negative Prompt Guidance (Ho & Salimans, 2022)
+    - SDXL Negative prompting (Podell, 2023)
+    
+    Args:
+        failed_attributes: Lista di stringhe attributo mancanti
+        
+    Returns:
+        Lista di stringhe per negative prompt
     """
     negatives = []
     
-    for attr_key, attr_value in missing_attributes:
-        if attr_key == "color":
-            negatives.append(f"wrong color, not {attr_value}")
+    for attr in failed_attributes:
+        attr_lower = attr.lower()
         
-        elif attr_key == "brand":
-            negatives.append(f"without brand logo, incorrect branding")
-        
-        elif attr_key == "material":
-            negatives.append(f"wrong material, not {attr_value}")
-        
-        elif attr_key == "packaging":
-            negatives.append(f"incorrect packaging")
-        
-        elif attr_key == "product_type":
-            negatives.append(f"wrong product category")
-        
+        # Pattern matching per tipi comuni di attributi
+        if "color" in attr_lower or any(c in attr_lower for c in ["red", "blue", "green", "black", "white"]):
+            negatives.append(f"wrong color, incorrect hue")
+        elif "brand" in attr_lower or "logo" in attr_lower or "text" in attr_lower:
+            negatives.append("without brand logo, missing text, incorrect branding")
+        elif "material" in attr_lower or any(m in attr_lower for m in ["leather", "plastic", "metal", "fabric"]):
+            negatives.append(f"wrong material texture")
+        elif "pattern" in attr_lower or any(p in attr_lower for p in ["stripe", "check", "solid"]):
+            negatives.append("wrong pattern")
+        elif "shape" in attr_lower:
+            negatives.append("wrong shape, incorrect form")
         else:
-            # Generico
-            negatives.append(f"missing {attr_key}")
+            # Generic: quote the missing attribute
+            negatives.append(f"missing {attr[:30]}")
     
-    return negatives
+    # Deduplicate
+    return list(dict.fromkeys(negatives))
 
+
+# ============================================================================
+# STANDALONE TEST
+# ============================================================================
 
 if __name__ == "__main__":
-    # Test standalone
-    import os
+    print("\n📋 Refine Module - Iterative Refinement with verify V5")
+    print("─" * 60)
+    print("""
+USAGE:
+    from pipeline.refine import iterative_refinement
+    from pipeline.judge import FinalJudge
     
-    test_img = "data/perva_test/1.jpg"
-    test_fp = {
-        "brand": "Test Brand",
-        "color": "blue",
-        "product_type": "bottle",
-        "packaging": "plastic bottle with label"
-    }
+    # Step 1: Iterative Refinement
+    result = iterative_refinement(
+        reference_image_path="data/target.jpg",
+        fingerprints_dict={
+            "color": "blue",
+            "material": "leather",
+            "sdxl_prompt": "(blue leather bag:1.3), ..."
+        },
+        output_dir="output/refinement"
+    )
     
-    if os.path.exists(test_img):
-        result = iterative_refinement(test_img, test_fp)
+    # Step 2: Final Judge (SEPARATE - modular)
+    if result["best_image"]:
+        judge = FinalJudge()  # Uses Qwen2.5-VL (different from MiniCPM!)
+        judge_result = judge.evaluate(
+            generated_image=result["best_image"],
+            reference_image="data/target.jpg",
+            fingerprints=fingerprints_dict,
+            prompt=fingerprints_dict.get("sdxl_prompt", "")
+        )
         
-        print("\n" + "="*60)
-        print("📊 HISTORY:")
-        for h in result["history"]:
-            print(f"   Iter {h['iteration']}: {h['score']:.1%} - {h['image']}")
-    else:
-        print(f"❌ File test non trovato: {test_img}")
+        print(f"Refinement passed: {result['is_verified']}")
+        print(f"Final Judge passed: {judge_result.passed}")
+
+FLOW:
+    1. Iterative refinement with MiniCPM + CLIP (verify V5)
+    2. Dynamic negative prompt updates from failed_attributes
+    3. Exit when is_verified=True or convergence
+    4. Call FinalJudge separately for independent evaluation
+
+MEMORY MODE:
+    This module uses MODEL SWAPPING for 24GB GPUs:
+    - SDXL (~8GB) loaded/unloaded for each generation
+    - MiniCPM+CLIP (~18GB) loaded/unloaded for each verification
+    Slower but memory-safe!
+    """)

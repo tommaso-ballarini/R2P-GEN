@@ -21,6 +21,8 @@ from pathlib import Path
 from pipeline.build_database import DatabaseBuilder
 from pipeline.generate import Generator
 from pipeline.verify import verify_generation_r2p
+from pipeline.refine import iterative_refinement
+from pipeline.judge import FinalJudge
 from pipeline.r2p_tools import ClipScoreCalculator
 from pipeline.utils2 import cleanup_gpu, ensure_output_dir
 from r2p_core.models.mini_cpm_reasoning import MiniCPMReasoning
@@ -174,7 +176,8 @@ def run_single_image_pipeline(
     target_image_path: str,
     fingerprints: dict = None,
     output_dir: str = None,
-    use_refinement: bool = True
+    use_refinement: bool = True,
+    use_final_judge: bool = True
 ):
     """
     Run the R2P-GEN pipeline on a single target image.
@@ -184,20 +187,27 @@ def run_single_image_pipeline(
     - Iterative refinement experiments
     - Quick prototyping
     
+    Pipeline:
+    1. (Optional) Extract fingerprints if not provided
+    2. Generate + Verify + Refine (MiniCPM)
+    3. (Optional) Final Judge (Qwen2.5-VL - DIFFERENT model!)
+    
     Args:
         target_image_path: Path to the target image
         fingerprints: Pre-extracted fingerprints (optional, will extract if None)
         output_dir: Output directory
         use_refinement: If True, use iterative refinement loop
+        use_final_judge: If True, run Final Judge after refinement (Qwen2.5-VL)
         
     Returns:
-        dict: Result with best_image, best_score, verification details
+        dict: Result with best_image, best_score, verification details, judge result
     """
     print(f"\n{'='*70}")
     print(f"🚀 R2P-GEN SINGLE IMAGE PIPELINE")
     print(f"{'='*70}")
     print(f"   Target: {target_image_path}")
     print(f"   Mode: {'Iterative Refinement' if use_refinement else 'Single-Shot'}")
+    print(f"   Final Judge: {'Enabled (Qwen2.5-VL)' if use_final_judge else 'Disabled'}")
     print(f"{'='*70}\n")
     
     if not os.path.exists(target_image_path):
@@ -212,26 +222,55 @@ def run_single_image_pipeline(
     # ═══════════════════════════════════════════════════════
     if fingerprints is None:
         print(f"{'─'*70}")
-        print("📍 PHASE 1: FINGERPRINT EXTRACTION")
+        print("📍 PHASE 1: FINGERPRINT EXTRACTION (MiniCPM)")
         print(f"{'─'*70}")
-        print("⚠️  Single-image extraction not yet implemented")
-        print("   Please provide fingerprints dict or use database mode")
-        print("   Run: python pipeline/build_database.py first")
-        return None
-    
-    print(f"✅ Using provided fingerprints ({len(fingerprints)} keys)")
+        
+        # Use DatabaseBuilder's extract_single_image method
+        builder = DatabaseBuilder(
+            source_dir=".",  # Not used for single image
+            output_path=os.path.join(output_dir, "_temp.json"),
+            device=Config.DEVICE,
+            model_path=Config.VLM_MODEL
+        )
+        
+        fingerprints = builder.extract_single_image(target_image_path)
+        
+        # CRITICAL: Full cleanup to free VRAM before generation
+        # MiniCPM extraction uses ~16GB, need to free it completely
+        if builder.extractor is not None:
+            del builder.extractor.model
+            del builder.extractor.tokenizer
+            del builder.extractor.clip_model
+            del builder.extractor
+            builder.extractor = None
+        del builder
+        
+        # Force garbage collection and CUDA cache clear
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        cleanup_gpu()
+        
+        print("   🧹 Cleaned up extraction model (freed VRAM)")
+        
+        if fingerprints is None:
+            print("❌ Failed to extract fingerprints")
+            return None
+        
+        print(f"   ✅ Extracted {len(fingerprints)} attributes")
+        print(f"   📝 SDXL Prompt: {fingerprints.get('sdxl_prompt', '')[:80]}...")
+    else:
+        print(f"✅ Using provided fingerprints ({len(fingerprints)} keys)")
     
     # ═══════════════════════════════════════════════════════
-    # PHASE 2: GENERATION & VERIFICATION
+    # PHASE 2: GENERATION & VERIFICATION (MiniCPM)
     # ═══════════════════════════════════════════════════════
     print(f"\n{'─'*70}")
-    print("📍 PHASE 2: GENERATION & VERIFICATION")
+    print("📍 PHASE 2: GENERATION & VERIFICATION (MiniCPM + CLIP)")
     print(f"{'─'*70}")
     
     if use_refinement:
-        # Import refinement module
-        from pipeline.refine import iterative_refinement
-        
+        # Iterative refinement with MiniCPM + CLIP (verify V5)
         result = iterative_refinement(
             reference_image_path=target_image_path,
             fingerprints_dict=fingerprints,
@@ -240,7 +279,7 @@ def run_single_image_pipeline(
         
         final_image = result.get("best_image")
         final_score = result.get("best_score", 0)
-        is_verified = result.get("best_verification", {}).get("is_verified", False)
+        is_verified = result.get("is_verified", False)
         iterations_used = result.get("iterations", 0)
         
     else:
@@ -310,6 +349,58 @@ def run_single_image_pipeline(
         }
     
     # ═══════════════════════════════════════════════════════
+    # PHASE 3: FINAL JUDGE (Qwen2.5-VL - DIFFERENT MODEL!)
+    # ═══════════════════════════════════════════════════════
+    judge_result = None
+    final_passed = None
+    
+    if use_final_judge and final_image:
+        print(f"\n{'─'*70}")
+        print("📍 PHASE 3: FINAL JUDGE (Qwen2.5-VL - Independent)")
+        print(f"{'─'*70}")
+        print("   Model: Qwen2.5-VL (DIFFERENT from MiniCPM used in refinement!)")
+        print("   Metrics: CLIP-I, CLIP-T, DINO-I, TIFA")
+        
+        judge = FinalJudge(
+            threshold=Config.TARGET_ACCURACY,
+            use_dino=True,
+            use_clip=True,
+            use_vqa=True
+        )
+        
+        try:
+            judge_eval = judge.evaluate(
+                generated_image=final_image,
+                reference_image=target_image_path,
+                fingerprints=fingerprints,
+                prompt=fingerprints.get("sdxl_prompt", "")
+            )
+            
+            judge_result = judge_eval.to_dict()
+            final_passed = judge_eval.passed
+            
+            print(f"\n   📊 Final Judge Results:")
+            print(f"      CLIP-I: {judge_eval.clip_i:.3f}")
+            print(f"      CLIP-T: {judge_eval.clip_t:.3f}")
+            print(f"      DINO-I: {judge_eval.dino_i:.3f}")
+            print(f"      TIFA:   {judge_eval.tifa_score:.1%}")
+            print(f"      Final Score: {judge_eval.final_score:.2%}")
+            print(f"      Passed: {'✅ YES' if final_passed else '❌ NO'}")
+            
+        except Exception as e:
+            print(f"   ⚠️  Final Judge error: {e}")
+            import traceback
+            traceback.print_exc()
+            final_passed = None
+        
+        finally:
+            judge.cleanup()
+        
+        # Add to result
+        result["judge_result"] = judge_result
+        result["final_passed"] = final_passed
+    
+    # ═══════════════════════════════════════════════════════
     # FINAL REPORT
     # ═══════════════════════════════════════════════════════
     print(f"\n{'='*70}")
@@ -317,16 +408,30 @@ def run_single_image_pipeline(
     print(f"{'='*70}")
     print(f"   📁 Input:  {Path(target_image_path).name}")
     print(f"   📁 Output: {Path(final_image).name if final_image else 'None'}")
-    print(f"   📊 Score:  {final_score:.2f}")
-    print(f"   ✓ Verified: {is_verified}")
-    print(f"   🔄 Iterations: {iterations_used}")
+    print(f"   � Iterations: {iterations_used}")
     
-    if is_verified:
-        print(f"   ✅ SUCCESS - Verification passed!")
-    elif final_score >= 0.6:
-        print(f"   ⚠️  PARTIAL - Acceptable but not verified")
+    print(f"\n   📊 Results by Stage:")
+    print(f"      Refinement (MiniCPM): {'✅ PASS' if is_verified else '❌ FAIL'} (Score: {final_score:.2f})")
+    
+    if use_final_judge:
+        if final_passed is None:
+            print(f"      Final Judge (Qwen): ⚠️  ERROR or NOT RUN")
+        elif final_passed:
+            print(f"      Final Judge (Qwen): ✅ PASS")
+        else:
+            print(f"      Final Judge (Qwen): ❌ FAIL")
+    
+    # Overall success requires BOTH stages to pass
+    overall_success = is_verified and (final_passed if use_final_judge else True)
+    
+    if overall_success:
+        print(f"\n   ✅ SUCCESS - All stages passed!")
+    elif is_verified and not use_final_judge:
+        print(f"\n   ✅ SUCCESS - Refinement passed (Final Judge disabled)")
+    elif is_verified:
+        print(f"\n   ⚠️  PARTIAL - Refinement passed, Final Judge failed")
     else:
-        print(f"   ❌ FAILURE - Insufficient quality")
+        print(f"\n   ❌ FAILURE - Refinement did not verify")
     
     print(f"{'='*70}\n")
     
@@ -368,16 +473,16 @@ if __name__ == "__main__":
     else:
         if not args.image:
             print("❌ --image is required for single mode")
+            print("   Usage: python full_loop.py --mode single --image path/to/image.jpg")
         else:
-            # For single mode, you'd need to provide fingerprints
-            # This is a placeholder - in practice you'd load from database or extract
-            print("⚠️  Single mode requires pre-extracted fingerprints")
-            print("   Use database mode or provide fingerprints programmatically")
+            # Single image mode - fingerprints extracted automatically!
+            result = run_single_image_pipeline(
+                target_image_path=args.image,
+                fingerprints=None,  # Will be extracted automatically via DatabaseBuilder
+                output_dir=args.output or "output/single",
+                use_refinement=not args.no_refinement,
+                use_final_judge=True  # Enable final judge by default
+            )
             
-            # Example usage:
-            # run_single_image_pipeline(
-            #     target_image_path=args.image,
-            #     fingerprints={"description": "...", "color": "...", ...},
-            #     output_dir=args.output,
-            #     use_refinement=not args.no_refinement
-            # )
+            if result:
+                print(f"\n📁 Output saved to: {result.get('best_image', 'N/A')}")

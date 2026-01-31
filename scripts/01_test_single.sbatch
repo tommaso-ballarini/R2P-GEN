@@ -16,9 +16,13 @@ echo "Job started at $(date)"
 echo "Running on node: $(hostname)"
 nvidia-smi
 
-# Load modules
-module load cuda/12.4
-module load python/3.12
+# Pulisce l'ambiente
+module purge
+
+# --- CORREZIONE CRITICA QUI SOTTO ---
+# Usiamo i moduli esatti che esistono sul cluster
+module load Python/3.12.3-GCCcore-13.3.0
+module load CUDA/12.1.1
 
 # Activate venv
 source ~/venvs/r2p-gen/bin/activate
@@ -34,11 +38,13 @@ cd ~/R2P-GEN
 mkdir -p logs output/single
 
 # === FIND TEST IMAGE ===
+# (Assumo che il percorso ~/data sia corretto come hai detto)
 TEST_IMAGE=$(find ~/data/perva-data/test/bag/alx -type f -name "*.jpg" -o -name "*.png" | head -1)
 echo "Test image: $TEST_IMAGE"
 
 # === RUN SINGLE IMAGE TEST ===
-python full_loop.py \
+# Aggiunto -u per vedere i log in tempo reale
+python -u full_loop.py \
     --mode single \
     --image "$TEST_IMAGE" \
     --output output/single \

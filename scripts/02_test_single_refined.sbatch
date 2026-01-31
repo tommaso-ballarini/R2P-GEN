@@ -15,8 +15,15 @@
 echo "Job started at $(date)"
 nvidia-smi
 
-module load cuda/12.4
-module load python/3.12
+# Pulisce i moduli precedenti per evitare conflitti
+module purge
+
+# --- CORREZIONE MODULI ---
+# Usa SEMPRE questi nomi specifici, altrimenti lo script non parte
+module load Python/3.12.3-GCCcore-13.3.0
+module load CUDA/12.1.1
+
+# Attiva l'ambiente virtuale
 source ~/venvs/r2p-gen/bin/activate
 
 export R2P_CLUSTER_MODE=true
@@ -30,7 +37,8 @@ TEST_IMAGE=$(find ~/data/perva-data/test/bag/alx -type f -name "*.jpg" -o -name 
 echo "Test image: $TEST_IMAGE"
 
 # === RUN WITH REFINEMENT + FINAL JUDGE ===
-python full_loop.py \
+# Aggiunto -u per vedere l'output in tempo reale nel file di log
+python -u full_loop.py \
     --mode single \
     --image "$TEST_IMAGE" \
     --output output/refined

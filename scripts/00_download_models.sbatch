@@ -8,14 +8,18 @@
 #SBATCH --time=02:00:00
 #SBATCH --output=logs/download_%j.out
 #SBATCH --error=logs/download_%j.err
+#SBATCH --gres=gpu:1
 
 # === SETUP ===
 echo "Job started at $(date)"
 echo "Running on node: $(hostname)"
 
-# Load modules
-module load cuda/12.4
-module load python/3.12
+# Pulisce tutto per sicurezza
+module purge
+
+# CARICA I MODULI CORRETTI (Quelli che abbiamo usato per installare)
+module load Python/3.12.3-GCCcore-13.3.0
+module load CUDA/12.1.1
 
 # Activate venv
 source ~/venvs/r2p-gen/bin/activate
@@ -27,6 +31,7 @@ cd ~/R2P-GEN
 mkdir -p logs
 
 # === RUN ===
-python scripts/download_models.py
+# Aggiungo -u a python per vedere i log in tempo reale
+python -u scripts/download_models.py
 
 echo "Job finished at $(date)"

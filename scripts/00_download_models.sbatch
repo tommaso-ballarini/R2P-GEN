@@ -17,21 +17,21 @@ echo "Running on node: $(hostname)"
 # Pulisce tutto per sicurezza
 module purge
 
-# CARICA I MODULI CORRETTI (Quelli che abbiamo usato per installare)
-module load Python/3.12.3-GCCcore-13.3.0
+# --- CORREZIONE: Carichiamo ESATTAMENTE le versioni usate per installare ---
+module load Python/3.11.3-GCCcore-12.3.0
 module load CUDA/12.1.1
 
-# Activate venv
-source ~/venvs/r2p-gen/bin/activate
-
-# Go to project dir
+# Vai nella cartella del progetto
 cd ~/R2P-GEN
 
-# Create logs dir
+# --- CORREZIONE: Attiviamo il venv locale che abbiamo appena creato ---
+source venv/bin/activate
+
+# Create logs dir se non esiste
 mkdir -p logs
 
 # === RUN ===
-# Aggiungo -u a python per vedere i log in tempo reale
+echo "Starting download script..."
 python -u scripts/download_models.py
 
 echo "Job finished at $(date)"

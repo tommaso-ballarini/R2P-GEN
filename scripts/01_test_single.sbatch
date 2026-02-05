@@ -19,31 +19,35 @@ nvidia-smi
 # Pulisce l'ambiente
 module purge
 
-# --- CORREZIONE CRITICA QUI SOTTO ---
-# Usiamo i moduli esatti che esistono sul cluster
-module load Python/3.12.3-GCCcore-13.3.0
+# Carica i moduli corretti (Python 3.11 + CUDA 12.1)
+module load Python/3.11.3-GCCcore-12.3.0
 module load CUDA/12.1.1
 
-# Activate venv
-source ~/venvs/r2p-gen/bin/activate
+# Attiva il venv LOCALE
+cd ~/R2P-GEN
+source venv/bin/activate
 
 # Set environment
 export R2P_CLUSTER_MODE=true
 export CUDA_VISIBLE_DEVICES=0
 
-# Go to project dir
-cd ~/R2P-GEN
-
 # Create output dirs
 mkdir -p logs output/single
 
 # === FIND TEST IMAGE ===
-# (Assumo che il percorso ~/data sia corretto come hai detto)
+# Cerca un'immagine. Se non la trova, usa un placeholder o esce.
 TEST_IMAGE=$(find ~/data/perva-data/test/bag/alx -type f -name "*.jpg" -o -name "*.png" | head -1)
+
+if [ -z "$TEST_IMAGE" ]; then
+    echo "❌ ERRORE: Nessuna immagine trovata in ~/data/perva-data/test/bag/alx"
+    # Scommenta la riga sotto se vuoi testare con un'immagine specifica fissa:
+    # TEST_IMAGE="example_database/bo.png" 
+    exit 1
+fi
+
 echo "Test image: $TEST_IMAGE"
 
 # === RUN SINGLE IMAGE TEST ===
-# Aggiunto -u per vedere i log in tempo reale
 python -u full_loop.py \
     --mode single \
     --image "$TEST_IMAGE" \

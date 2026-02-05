@@ -102,7 +102,8 @@ def verify_generation_r2p(
         ref_image = Image.open(ref_image_path).convert("RGB")
     except Exception as e:
         return {
-            "is_verified": False, 
+            "is_verified": False,
+            "score": 0.0,
             "reason": f"Image error: {e}", 
             "vlm_history": [], 
             "method": "Error",
@@ -116,6 +117,7 @@ def verify_generation_r2p(
         print("⚠️ No attributes found in fingerprints!")
         return {
             "is_verified": False,
+            "score": 0.0,
             "reason": "No attributes to verify",
             "vlm_history": [],
             "method": "Error_NoAttributes",

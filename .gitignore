@@ -1,10 +1,31 @@
-# Ignora il contenuto ma mantieni la cartella (tranne il file .gitkeep)
-models/*
-!models/.gitkeep
-
-data/*
-!data/.gitkeep
-
-project_sam/venv/
+# === Python & Ambienti ===
+__pycache__/
+*.pyc
+venv/
+.venv/
+env/
+venvs/
 .env
-/data/
+
+# === Logs & Output ===
+logs/
+*.log
+
+# === Slurm Cluster Outputs (Fondamentale!) ===
+# Ignora i file di output dei job sbatch
+*.out
+*.err
+
+# === Modelli e Dati Pesanti ===
+# Evita di caricare GB di modelli su git
+output/
+checkpoints/
+models/
+*.pth
+*.safetensors
+*.bin
+
+# === IDE & Sistema ===
+.vscode/
+.idea/
+.DS_Store

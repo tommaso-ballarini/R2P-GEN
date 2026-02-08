@@ -8,3 +8,48 @@ data/*
 project_sam/venv/
 .env
 /data/
+
+# ============================================
+# Testing & Experiments
+# ============================================
+
+# External repositories (cloned for testing)
+test/external/
+test/external/AnyDoor/
+
+# Checkpoints (large model files)
+checkpoints/
+checkpoints/anydoor/
+
+# Output directories (generated images)
+output/
+output/baseline/
+output/test/
+
+# Experiment logs
+*.log
+experiment.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak

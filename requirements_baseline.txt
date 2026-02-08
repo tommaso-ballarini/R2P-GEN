@@ -1,0 +1,9 @@
+# requirements_baseline.txt
+# ============================================
+# Dependencies for Baseline Experiments
+# ============================================
+# These experiments use the same dependencies as the main pipeline.
+# This file is here for completeness and tracking purposes.
+
+# No additional dependencies required - uses base requirements.txt
+# All required packages (diffusers, torch, PIL, etc.) are already included.

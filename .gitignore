@@ -30,5 +30,5 @@ models/
 .idea/
 .DS_Store
 
-data/
+data/*
 

@@ -29,3 +29,6 @@ models/
 .vscode/
 .idea/
 .DS_Store
+
+data/
+

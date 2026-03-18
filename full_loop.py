@@ -287,12 +287,13 @@ def run_single_image_pipeline(
         from pipeline.generate import Generator
         
         # Create temporary database for single image
+        # Generator expects: name, info (with sdxl_prompt), image (list)
         temp_db = {
             "concept_dict": {
                 "single_target": {
-                    "selected_images": [target_image_path],
-                    "info": fingerprints,
-                    "sdxl_prompt": fingerprints.get("description", "A product image")
+                    "name": "single_target",
+                    "image": [target_image_path],
+                    "info": fingerprints
                 }
             }
         }
@@ -309,7 +310,9 @@ def run_single_image_pipeline(
         generator.generate_all()
         generator.cleanup()
         
-        final_image = os.path.join(output_dir, "single_target_generated.png")
+        # Filename pattern: {name}_ipa_{method_suffix}.png
+        method_suffix = "layerwise" if Config.USE_LAYERWISE_SCALING else "global"
+        final_image = os.path.join(output_dir, f"single_target_ipa_{method_suffix}.png")
         
         # Verify
         print("   Loading verification models...")

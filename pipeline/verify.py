@@ -64,11 +64,7 @@ def verify_generation_r2p(
 ):
     """
     R2P Verification Pipeline V5.
-    
-    Improvements over V4:
-      - Phase 0: CLIP Quick Reject (skip VLM if CLIP score < 0.10)
-      - Worst-K=1 detection: any single attribute < threshold triggers pairwise/fail
-      - Output includes failed_attributes list for refine phase
+ 
     
     Pipeline:
         Phase 0: CLIP Quick Reject
@@ -93,7 +89,7 @@ def verify_generation_r2p(
     failed_attributes = []  # NEW: track failed attrs for refine
     
     print(f"\n{'='*60}")
-    print(f"R2P VERIFICATION V5 - {os.path.basename(gen_image_path)}")
+    print(f"R2P VERIFICATION - {os.path.basename(gen_image_path)}")
     print(f"{'='*60}")
     
     # Load images
@@ -102,7 +98,8 @@ def verify_generation_r2p(
         ref_image = Image.open(ref_image_path).convert("RGB")
     except Exception as e:
         return {
-            "is_verified": False, 
+            "is_verified": False,
+            "score": 0.0,
             "reason": f"Image error: {e}", 
             "vlm_history": [], 
             "method": "Error",
@@ -116,6 +113,7 @@ def verify_generation_r2p(
         print("⚠️ No attributes found in fingerprints!")
         return {
             "is_verified": False,
+            "score": 0.0,
             "reason": "No attributes to verify",
             "vlm_history": [],
             "method": "Error_NoAttributes",
@@ -128,6 +126,7 @@ def verify_generation_r2p(
     # PHASE 0: CLIP QUICK REJECT (Skip VLM if obviously bad)
     # =========================================================================
     print(f"\n[Phase 0] CLIP Quick Reject Check...")
+    # Compute CLIP scores for generated image and each attribute (crossmodal attribute verification of original R2P paper)
     
     gen_clip_score, gen_breakdown = clip_calculator.compute_attribute_score(gen_image, attributes_list)
     _, ref_breakdown = clip_calculator.compute_attribute_score(ref_image, attributes_list)

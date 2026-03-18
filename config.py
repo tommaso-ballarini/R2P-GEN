@@ -3,14 +3,29 @@
 Centralized configuration for the R2P-GEN pipeline.
 All configurable parameters should be defined here.
 """
+import os
 
 class Config:
+    # === CLUSTER MODE ===
+    # Set to True when running on SLURM cluster
+    CLUSTER_MODE = os.environ.get("R2P_CLUSTER_MODE", "false").lower() == "true"
+    
+    # === BASE PATHS (auto-detect based on mode) ===
+    if CLUSTER_MODE:
+        HOME_DIR = os.environ.get("HOME", "/home/tommaso.ballarini-1")
+        BASE_DIR = os.path.join(HOME_DIR, "R2P-GEN")
+        DATA_BASE = os.path.join(HOME_DIR, "data")
+    else:
+        BASE_DIR = "."
+        DATA_BASE = "data"
+    
     # === MODELS ===
     VLM_MODEL = "openbmb/MiniCPM-o-2_6"
     SDXL_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
     IP_ADAPTER_REPO = "h94/IP-Adapter"
     IP_ADAPTER_SUBFOLDER = "sdxl_models"
     IP_ADAPTER_WEIGHT_NAME = "ip-adapter_sdxl.bin"
+    QWEN_MODEL = "Qwen/Qwen2-VL-7B-Instruct"  # For Final Judge
     
     # === GENERATION ===
     IP_ADAPTER_SCALE_GLOBAL = 0.6
@@ -20,43 +35,39 @@ class Config:
     DEVICE = "cuda"
     
     # === IP-ADAPTER LAYER-WISE SCALING ===
-    # Strategy: Minimize background contamination, maximize identity preservation
-    # Based on InstantStyle research + R2P optimization
     USE_LAYERWISE_SCALING = True
     IP_ADAPTER_LAYER_WEIGHTS = {
         "down": {
-            "block_0": [0.0, 0.0],         # Zero background from reference
-            "block_1": [0.0, 0.0],         # Zero composition from reference
-            "block_2": [0.4, 0.7],         # Object shape preservation (smooth gradient)
+            "block_0": [0.0, 0.0],
+            "block_1": [0.0, 0.0],
+            "block_2": [0.4, 0.7],
         },
-        "mid": 0.9,                        # Very high semantic identity
+        "mid": 0.9,
         "up": {
-            "block_0": [0.6, 0.8, 0.9],    # Texture/color injection (3 layers)
-            "block_1": [0.95, 0.95, 0.95], # Maximum material fidelity (3 layers)
-            "block_2": [0.85, 0.85],       # Fine details preservation (2 layers)
-            "block_3": [0.7],              # Final refinement (1 layer)
+            "block_0": [0.6, 0.8, 0.9],
+            "block_1": [0.95, 0.95, 0.95],
+            "block_2": [0.85, 0.85],
+            "block_3": [0.7],
         }
     }
     
     # === REFINEMENT LOOP ===
     MAX_ITERATIONS = 3
-    TARGET_ACCURACY = 0.95  # 95% accuracy to exit loop
-    MIN_IMPROVEMENT = 0.05  # Minimum improvement between iterations
+    TARGET_ACCURACY = 0.95
+    MIN_IMPROVEMENT = 0.05
     
     # === IMAGES ===
     MAX_IMAGE_DIM = 896
-    FALLBACK_DIM = 448      # Reduced dimension in case of OOM
-    REFERENCE_IMAGE_SIZE = 512  # Size to resize reference images for IP-Adapter
-    OUTPUT_IMAGE_SIZE = 1024    # Generated image size
+    FALLBACK_DIM = 448
+    REFERENCE_IMAGE_SIZE = 512
+    OUTPUT_IMAGE_SIZE = 1024
     
     # === PATHS ===
-    OUTPUT_DIR = "output"
-    DATASET_DIR = "data/perva-data"
-    DATABASE_DIR = "database"
+    OUTPUT_DIR = os.path.join(BASE_DIR, "output") if CLUSTER_MODE else "output"
+    DATASET_DIR = os.path.join(DATA_BASE, "perva-data") if CLUSTER_MODE else "data/perva-data"
+    DATABASE_DIR = os.path.join(BASE_DIR, "database") if CLUSTER_MODE else "database"
     
     # === NEGATIVE PROMPTS ===
-    # Prevents background contamination and common SDXL artifacts
-    # Critical for layer-wise scaling: reinforces down blocks=0.0
     NEGATIVE_PROMPT = (
         "blurry, low quality, low resolution, distorted, deformed, "
         "(background contamination:1.3), (reference background leakage:1.2), "

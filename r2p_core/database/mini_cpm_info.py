@@ -70,10 +70,13 @@ class MiniCPMDescription:
         self.device = device
         model_path = 'openbmb/MiniCPM-o-2_6'
         self.model = AutoModel.from_pretrained(
-            model_path, trust_remote_code=True,
+            model_path, 
+            trust_remote_code=True,
             attn_implementation=attn_implementation, 
-            torch_dtype=torch_dtype
-        ).eval().to(self.device)
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,  # Riduce uso RAM durante caricamento
+            device_map="auto"         # Gestisce automaticamente device mapping
+        ).eval()
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         self.clip_model = CLIPModel.from_pretrained('openai/clip-vit-large-patch14-336').to(self.device)
         self.feature_extractor = CLIPProcessor.from_pretrained('openai/clip-vit-large-patch14-336')

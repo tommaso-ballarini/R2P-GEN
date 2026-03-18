@@ -18,20 +18,24 @@ from .refine import iterative_refinement, build_negative_from_failed
 from .judge import FinalJudge, JudgeResult
 from .metrics import MetricsCalculator, MetricsResult, quick_evaluate
 from .utils2 import cleanup_gpu, print_memory_stats, ensure_output_dir, get_iteration_filename
+from .profiler import ResourceProfiler
 
 __all__ = [
     # Core pipeline
     'DatabaseBuilder',
     'Generator',
     'iterative_refinement',
-    
+
     # Final Judge & Metrics
     'FinalJudge',
     'JudgeResult',
     'MetricsCalculator',
     'MetricsResult',
     'quick_evaluate',
-    
+
+    # Profiling
+    'ResourceProfiler',
+
     # Utilities
     'cleanup_gpu',
     'print_memory_stats',

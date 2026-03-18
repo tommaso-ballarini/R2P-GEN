@@ -82,7 +82,8 @@ class Generator:
         sdxl_model=None,
         ip_adapter_repo=None,
         ip_adapter_subfolder=None,
-        ip_adapter_weight_name=None
+        ip_adapter_weight_name=None,
+        seed=None
     ):
         """
         Initialize the Generator with configuration parameters.
@@ -112,24 +113,28 @@ class Generator:
         self.output_dir = output_dir
         
         # Optional parameters with Config defaults
-        self.device = device or Config.DEVICE
-        self.use_layerwise_scaling = use_layerwise_scaling if use_layerwise_scaling is not None else Config.USE_LAYERWISE_SCALING
-        self.ip_adapter_scale_global = ip_adapter_scale_global or Config.IP_ADAPTER_SCALE_GLOBAL
-        self.ip_adapter_layer_weights = ip_adapter_layer_weights or Config.IP_ADAPTER_LAYER_WEIGHTS
-        self.num_inference_steps = num_inference_steps or Config.NUM_INFERENCE_STEPS
-        self.guidance_scale = guidance_scale or Config.GUIDANCE_SCALE
-        self.negative_prompt = negative_prompt or Config.NEGATIVE_PROMPT
-        self.reference_image_size = reference_image_size or Config.REFERENCE_IMAGE_SIZE
-        self.output_image_size = output_image_size or Config.OUTPUT_IMAGE_SIZE
-        self.sdxl_model = sdxl_model or Config.SDXL_MODEL
-        self.ip_adapter_repo = ip_adapter_repo or Config.IP_ADAPTER_REPO
-        self.ip_adapter_subfolder = ip_adapter_subfolder or Config.IP_ADAPTER_SUBFOLDER
-        self.ip_adapter_weight_name = ip_adapter_weight_name or Config.IP_ADAPTER_WEIGHT_NAME
-        
+        self.device = device or Config.GPU.DEVICE
+        self.use_layerwise_scaling = use_layerwise_scaling if use_layerwise_scaling is not None else Config.Generate.USE_LAYERWISE_SCALING
+        self.ip_adapter_scale_global = ip_adapter_scale_global or Config.Generate.IP_ADAPTER_SCALE_GLOBAL
+        self.ip_adapter_layer_weights = ip_adapter_layer_weights or Config.Generate.IP_ADAPTER_LAYER_WEIGHTS
+        self.num_inference_steps = num_inference_steps or Config.Generate.NUM_INFERENCE_STEPS
+        self.guidance_scale = guidance_scale or Config.Generate.GUIDANCE_SCALE
+        self.negative_prompt = negative_prompt or Config.Generate.NEGATIVE_PROMPT
+        self.reference_image_size = reference_image_size or Config.Images.REFERENCE_IMAGE_SIZE
+        self.output_image_size = output_image_size or Config.Images.OUTPUT_IMAGE_SIZE
+        self.sdxl_model = sdxl_model or Config.Models.SDXL_MODEL
+        self.ip_adapter_repo = ip_adapter_repo or Config.Models.IP_ADAPTER_REPO
+        self.ip_adapter_subfolder = ip_adapter_subfolder or Config.Models.IP_ADAPTER_SUBFOLDER
+        self.ip_adapter_weight_name = ip_adapter_weight_name or Config.Models.IP_ADAPTER_WEIGHT_NAME
+        self.seed = seed if seed is not None else Config.Generate.SEED
+
         # Will be initialized during generate_all()
         self.pipe = None
         self.database = None
         self.concept_dict = None
+
+        # Internal counters
+        self._iter_count = 0  # Number of generate_single calls; used for lazy cache clearing and per-concept seed
         
         # Statistics
         self.stats = {
@@ -264,9 +269,13 @@ class Generator:
         
         print(f"\n🔹 Generating: {name}")
         print(f"   Prompt: {prompt[:100]}...")
-        
+
+        # Increment counter (used for per-concept seed and lazy cache clearing)
+        self._iter_count += 1
+
         # Generate image
         try:
+            gen = torch.Generator(device=self.device).manual_seed(self.seed + self._iter_count)
             with torch.inference_mode():
                 generated_image = self.pipe(
                     prompt=prompt,
@@ -275,26 +284,29 @@ class Generator:
                     height=self.output_image_size,
                     width=self.output_image_size,
                     num_inference_steps=self.num_inference_steps,
-                    guidance_scale=self.guidance_scale
+                    guidance_scale=self.guidance_scale,
+                    generator=gen
                 ).images[0]
-            
+
             # Save image
             method_suffix = "layerwise" if self.use_layerwise_scaling else "global"
             save_path = os.path.join(self.output_dir, f"{name}_ipa_{method_suffix}.png")
             generated_image.save(save_path)
             print(f"   💾 Saved to: {save_path}")
-            
+
             self.stats["successful"] += 1
-            
-            # Cleanup after each generation
-            torch.cuda.empty_cache()
-            
+
+            # Lazy cache clearing: only every CLEAR_CACHE_EVERY iterations
+            if Config.GPU.CLEAR_CACHE_EVERY > 0 and self._iter_count % Config.GPU.CLEAR_CACHE_EVERY == 0:
+                torch.cuda.empty_cache()
+
             return save_path
-            
+
         except Exception as e:
             print(f"❌ Error generating {name}: {e}")
             self.stats["failed"] += 1
-            torch.cuda.empty_cache()
+            if Config.GPU.CLEAR_CACHE_EVERY > 0 and self._iter_count % Config.GPU.CLEAR_CACHE_EVERY == 0:
+                torch.cuda.empty_cache()
             return None
     
     def generate_all(self):
@@ -369,7 +381,8 @@ def generate_image(
     output_path: str,
     negative_prompt: str = None,
     iteration: int = 1,
-    sdxl_prompt: str = None
+    sdxl_prompt: str = None,
+    seed: int = None
 ):
     """
     Generate a single image using SDXL + IP-Adapter.
@@ -398,43 +411,43 @@ def generate_image(
     
     # Determine negative prompt
     if negative_prompt is None:
-        negative_prompt = Config.NEGATIVE_PROMPT
-    
+        negative_prompt = Config.Generate.NEGATIVE_PROMPT
+
     # Check if we need to load/reload the pipeline
-    current_config = (Config.SDXL_MODEL, Config.IP_ADAPTER_REPO, Config.USE_LAYERWISE_SCALING)
-    
+    current_config = (Config.Models.SDXL_MODEL, Config.Models.IP_ADAPTER_REPO, Config.Generate.USE_LAYERWISE_SCALING)
+
     if _cached_pipe is None or _cached_config != current_config:
         print(f"   🔌 Loading SDXL + IP-Adapter pipeline...")
-        
+
         # Cleanup old pipeline if exists
         if _cached_pipe is not None:
             del _cached_pipe
             torch.cuda.empty_cache()
             gc.collect()
-        
+
         try:
             from diffusers import StableDiffusionXLPipeline
-            
+
             # Load base SDXL
             _cached_pipe = StableDiffusionXLPipeline.from_pretrained(
-                Config.SDXL_MODEL,
-                torch_dtype=torch.float16 if Config.USE_FP16 else torch.float32,
+                Config.Models.SDXL_MODEL,
+                torch_dtype=torch.float16 if Config.GPU.USE_FP16 else torch.float32,
                 use_safetensors=True,
-                variant="fp16" if Config.USE_FP16 else None
-            ).to(Config.DEVICE)
-            
+                variant="fp16" if Config.GPU.USE_FP16 else None
+            ).to(Config.GPU.DEVICE)
+
             # Load IP-Adapter
             _cached_pipe.load_ip_adapter(
-                Config.IP_ADAPTER_REPO,
-                subfolder=Config.IP_ADAPTER_SUBFOLDER,
-                weight_name=Config.IP_ADAPTER_WEIGHT_NAME
+                Config.Models.IP_ADAPTER_REPO,
+                subfolder=Config.Models.IP_ADAPTER_SUBFOLDER,
+                weight_name=Config.Models.IP_ADAPTER_WEIGHT_NAME
             )
-            
+
             # Set IP-Adapter scale
-            if Config.USE_LAYERWISE_SCALING and Config.IP_ADAPTER_LAYER_WEIGHTS:
-                _cached_pipe.set_ip_adapter_scale(Config.IP_ADAPTER_LAYER_WEIGHTS)
+            if Config.Generate.USE_LAYERWISE_SCALING and Config.Generate.IP_ADAPTER_LAYER_WEIGHTS:
+                _cached_pipe.set_ip_adapter_scale(Config.Generate.IP_ADAPTER_LAYER_WEIGHTS)
             else:
-                _cached_pipe.set_ip_adapter_scale(Config.IP_ADAPTER_SCALE_GLOBAL)
+                _cached_pipe.set_ip_adapter_scale(Config.Generate.IP_ADAPTER_SCALE_GLOBAL)
             
             _cached_config = current_config
             print(f"   ✓ Pipeline loaded")
@@ -451,21 +464,24 @@ def generate_image(
         ref_image = Image.open(reference_image_path).convert("RGB")
         
         # Resize if needed
-        if Config.REFERENCE_IMAGE_SIZE:
+        if Config.Images.REFERENCE_IMAGE_SIZE:
             ref_image = ref_image.resize(
-                (Config.REFERENCE_IMAGE_SIZE, Config.REFERENCE_IMAGE_SIZE),
+                (Config.Images.REFERENCE_IMAGE_SIZE, Config.Images.REFERENCE_IMAGE_SIZE),
                 Image.Resampling.LANCZOS
             )
-        
+
         # Generate
+        _seed = seed if seed is not None else Config.Generate.SEED
+        gen = torch.Generator(device=Config.GPU.DEVICE).manual_seed(_seed)
         result = _cached_pipe(
             prompt=sdxl_prompt,
             negative_prompt=negative_prompt,
             ip_adapter_image=ref_image,
-            num_inference_steps=Config.NUM_INFERENCE_STEPS,
-            guidance_scale=Config.GUIDANCE_SCALE,
-            height=Config.OUTPUT_IMAGE_SIZE,
-            width=Config.OUTPUT_IMAGE_SIZE
+            num_inference_steps=Config.Generate.NUM_INFERENCE_STEPS,
+            guidance_scale=Config.Generate.GUIDANCE_SCALE,
+            height=Config.Images.OUTPUT_IMAGE_SIZE,
+            width=Config.Images.OUTPUT_IMAGE_SIZE,
+            generator=gen
         )
         
         # Save
@@ -523,7 +539,8 @@ def main():
     print(f"📂 Working directory: {os.getcwd()}")
     
     # Default paths relative to project root
-    default_database = os.path.join(PROJECT_ROOT, "database", "database_perva_train_1_clip.json")
+    db_filename = "database.json" if Config.Database.CANONICAL_NAME else "database_perva_train_clip.json"
+    default_database = os.path.join(PROJECT_ROOT, "database", db_filename)
     default_output = os.path.join(PROJECT_ROOT, "output", "generated_images")
     
     # Check if database exists

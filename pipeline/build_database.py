@@ -9,33 +9,8 @@ from tqdm import tqdm
 # ============================================================================
 # 1. CONFIGURATION
 # ============================================================================
-# NOTE: Remember we're in pipeline/, adjust paths accordingly for future use
-
-# Path Configuration
-# We're in pipeline/, so data/ is one level up at project root
-SOURCE_DATA_DIR = "../data/perva-data"    # Source directory containing images
-DEVICE = "cuda"                            # Device for model inference (cuda/cpu)
-MODEL_PATH = "openbmb/MiniCPM-o-2_6"      # MiniCPM model path
-
-# Dataset Split Configuration (following R2P workflow)
-DATASET_SPLIT = "train"    # Options: "train", "test", "all"
-IMAGES_PER_CONCEPT = 1      # Options: 1, 3, 5, "all"
-                            # How many images to use per concept for fingerprinting
-                            # R2P original uses 1 image per concept
-
-# Run Settings
-DEBUG_MODE = True         # Set to False to process the entire dataset
-DEBUG_LIMIT = 5            # Number of concepts to process in debug mode
-USE_CLIP_CATEGORY = True   # True = Let R2P detect category via CLIP; False = Pass None/Generic
-USE_CLIP_SELECTION = True  # True = Select images closest to CLIP centroid (R2P); False = Use first N images
-IGNORE_LAION = True        # Ignore 'laion' subdirectories (R2P training data)
-SEED = 42                  # Random seed for reproducible CLIP selection (R2P uses seed for K-means)
-
-# SDXL Prompt Generation Strategy
-# Options: 'simple', 'optimized', 'gemini'
-SDXL_PROMPT_STRATEGY = 'gemini'  # 'simple' = Natural description + style suffix (baseline)
-                                  # 'optimized' = Hierarchical tags with weights (R2P enhanced)
-                                  # 'gemini' = Brand-first, ultra-concise (SOTA personalization)
+# All configuration has been moved to config.py for centralized management.
+# Import Config to access settings via Config.BuildDatabase.*, Config.Models.*, etc.
 
 
 # ============================================================================
@@ -63,6 +38,9 @@ from pipeline.prompts import (
     HARDCODED_STYLE
 )
 
+# Import centralized config
+from config import Config
+
 try:
     from database.mini_cpm_info import MiniCPMDescription
     from database.create_train_test_perva_split import CLIPImageProcessor
@@ -86,12 +64,13 @@ except ImportError as e:
 class DatabaseBuilder:
     """
     Builds a database of image fingerprints and SDXL prompts following R2P workflow.
-    
+
     This class processes images at the CONCEPT level (not individual images):
     - Each concept = a unique physical object with multiple views
-    - Extracts fingerprints from ONE representative image per concept
-    - Stores ALL selected images for each concept in the database
-    
+    - Selects ONE representative image per concept
+    - Extracts fingerprints from that single image
+    - Stores the selected image in the database
+
     R2P Dataset Structure:
         data/perva-data/
         ├── train/
@@ -103,17 +82,17 @@ class DatabaseBuilder:
         │   │   └── ...
         │   └── ...
         └── test/ (same structure)
-    
+
     Attributes:
         source_dir (str): Base directory containing train/test splits
         output_path (str): Where to save the JSON database
         device (str): Compute device ('cuda' or 'cpu')
         model_path (str): MiniCPM model identifier
         dataset_split (str): Which split to process ('train', 'test', 'all')
-        images_per_concept (int|str): How many images to use (1, 3, 5, 'all')
         debug_mode (bool): If True, process only debug_limit concepts
         debug_limit (int): Number of concepts to process in debug mode
         use_clip_category (bool): If True, auto-detect category with CLIP
+        use_clip_selection (bool): If True, select most representative image via CLIP
         ignore_laion (bool): If True, skip 'laion' subdirectories
     """
     
@@ -138,22 +117,25 @@ class DatabaseBuilder:
         "unknown", "no brand", "no text"
     ]
     
-    def __init__(self, source_dir, output_path, device="cuda", 
+    def __init__(self, source_dir, output_path, device="cuda",
                  model_path="openbmb/MiniCPM-o-2_6",
-                 dataset_split="train", images_per_concept=1,
+                 dataset_split="train",
                  debug_mode=False, debug_limit=5, use_clip_category=True,
                  use_clip_selection=True, ignore_laion=True, seed=42,
                  prompt_strategy='gemini', system_prompt=None, hardcoded_style=None):
         """
         Initialize the DatabaseBuilder following R2P workflow.
-        
+
+        Note: images_per_concept has been removed. The script now always uses
+        1 image per concept (R2P standard). All images are still stored in the
+        database for backward compatibility.
+
         Args:
             source_dir: Directory containing images to process
             output_path: Where to save the resulting JSON database
             device: Device for model inference ('cuda' or 'cpu')
             model_path: Path or identifier for the MiniCPM model
             dataset_split: Which split to process ('train', 'test', 'all')
-            images_per_concept: Number of images per concept (1, 3, 5, 'all')
             debug_mode: If True, process only a subset of concepts
             debug_limit: Number of concepts to process in debug mode
             use_clip_category: If True, detect category via CLIP
@@ -172,7 +154,6 @@ class DatabaseBuilder:
         self.device = device
         self.model_path = model_path
         self.dataset_split = dataset_split
-        self.images_per_concept = images_per_concept
         self.debug_mode = debug_mode
         self.debug_limit = debug_limit
         self.use_clip_category = use_clip_category
@@ -295,52 +276,47 @@ class DatabaseBuilder:
     
     def _select_images_for_concept(self, images):
         """
-        Select N images from a concept's image list.
-        
+        Select ONE representative image from a concept's image list for fingerprinting.
+
+        R2P Standard Approach:
+        - Always selects EXACTLY ONE image per concept
+        - This image is used for both fingerprinting and stored in the database
+
         Two selection strategies:
-        1. CLIP-based (R2P enhanced): 
-           - Select top-N images closest to CLIP feature centroid
-           - Shuffle them with seed for robust random selection
-           - This avoids bias from arbitrary ordering
-        2. Simple: Use first N images (sorted numerically)
-        
+        1. CLIP-based (R2P enhanced):
+           - Select the image closest to CLIP feature centroid
+           - This is the most representative image of the concept
+        2. Simple: Use first image (sorted numerically)
+
         Args:
             images: List of image paths for a concept
-            
+
         Returns:
-            list: Selected image paths (shuffled if CLIP-based)
+            list: Single-element list containing the selected image path
         """
-        if self.images_per_concept == "all":
-            return images
-        
-        num_to_select = min(self.images_per_concept, len(images))
-        
-        # Strategy 1: CLIP-based selection with robust random sampling
+        if len(images) == 0:
+            return []
+
+        # Strategy 1: CLIP-based selection - find most representative image
         if self.use_clip_selection and self.clip_processor is not None:
             try:
                 # Extract CLIP features for all images
                 clip_features = self.clip_processor.extract_clip_features(images)
-                
-                # Get images closest to centroid (mean feature)
+
+                # Get image closest to centroid (the most representative one)
                 _, closest_indices = self.clip_processor.get_closest_to_mean_features(
-                    clip_features, top_n=num_to_select
+                    clip_features, top_n=1
                 )
-                
-                selected = [images[idx] for idx in closest_indices]
-                
-                # Shuffle with seed for robust selection
-                # This ensures the "representative" image (first element) is 
-                # randomly chosen among the top-N, avoiding view-angle bias
-                np.random.seed(self.seed)
-                np.random.shuffle(selected)
-                
-                return selected
-                
+
+                # Return only the most representative image
+                representative_idx = closest_indices[0]
+                return [images[representative_idx]]
+
             except Exception as e:
                 print(f"⚠️ CLIP selection failed: {e}, falling back to simple selection")
-        
-        # Strategy 2: Simple selection (first N images)
-        return images[:num_to_select]
+
+        # Strategy 2: Simple selection - use first image (sorted numerically)
+        return [images[0]]
     
     def _collect_features_safely(self, info_dict):
         """
@@ -379,21 +355,21 @@ class DatabaseBuilder:
         """
         Generate SDXL-compatible prompt from fingerprint data.
         
+        Post-processing applies:
+        - Background specification from Config.SDXL_BACKGROUND_STYLE
+        - Quality suffix from Config.SDXL_QUALITY_SUFFIX
+        - Optional subject weight if Config.SDXL_USE_PROMPT_WEIGHTS=True
+        
         Three strategies available (controlled by SDXL_PROMPT_STRATEGY):
         
-        1. SIMPLE (baseline): Natural language description + hardcoded style suffix
-           - More readable, traditional approach
-           - Style applied as separate suffix
+        1. SIMPLE (baseline): Clean comma-separated tags
+           - No weights, refinement-friendly
         
-        2. OPTIMIZED (R2P enhanced): Hierarchical tags with weights
-           - (Concept:1.3) emphasis for identity preservation
-           - Discriminative traits placed first
-           - Target 60-70 tokens
+        2. OPTIMIZED (R2P enhanced): Hierarchical tags
+           - No weights, discriminative traits first
         
         3. GEMINI (SOTA personalization): Brand-first ultra-concise
-           - (Brand logo:1.4) if present, maximum brand emphasis
-           - Material+texture fused descriptors
-           - Target 65-70 tokens, maximum identity preservation
+           - No weights, maximum identity preservation
         
         Args:
             full_info_dict: Dictionary with extracted fingerprints
@@ -401,15 +377,29 @@ class DatabaseBuilder:
         Returns:
             str: Complete SDXL prompt ready for image generation
         """
+        import re
+        
         features_text = self._collect_features_safely(full_info_dict)
         concept_name = full_info_dict.get('category', 'object')
+
+        # Get background and quality suffix from config
+        background_template = Config.get_background_template()
+        quality_suffix = Config.Generate.SDXL_QUALITY_SUFFIX
+        
+        # Build suffix (background + quality)
+        suffix_parts = []
+        if background_template:
+            suffix_parts.append(background_template)
+        if quality_suffix:
+            suffix_parts.append(quality_suffix)
+        full_suffix = ", ".join(suffix_parts)
         
         # Fallback if no valid features found
         if not features_text:
-            if self.prompt_strategy == 'simple':
-                return f"A photorealistic image of a {concept_name}, studio lighting."
-            else:  # optimized or gemini
-                return f"({concept_name}:1.3), photorealistic, studio lighting, 8k, sharp focus"
+            base_prompt = f"a {concept_name}"
+            if Config.Generate.SDXL_USE_PROMPT_WEIGHTS:
+                base_prompt = f"({concept_name}:{Config.Generate.SDXL_SUBJECT_WEIGHT})"
+            return f"{base_prompt}, {full_suffix}"
         
         # Build query with appropriate prompt template
         query = f"{self.system_prompt}\n{features_text}"
@@ -426,85 +416,119 @@ class DatabaseBuilder:
                 
             # Clean output
             clean_desc = description.strip().strip('"').strip("'")
+
+            # Remove any weights the LLM might have added (enforce clean prompts)
+            if not Config.Generate.SDXL_USE_PROMPT_WEIGHTS:
+                # Remove patterns like (word:1.3) -> word
+                clean_desc = re.sub(r'\(([^:]+):\d+\.?\d*\)', r'\1', clean_desc)
             
-            # Apply post-processing based on strategy
-            if self.prompt_strategy == 'simple':
-                # SIMPLE: Append hardcoded style suffix
-                final_prompt = f"{clean_desc}{self.hardcoded_style}"
-            else:
-                # OPTIMIZED or GEMINI: Validate emphasis weight presence
-                if f"({concept_name}:" not in clean_desc and f"({concept_name.lower()}:" not in clean_desc:
-                    # Add emphasis if LLM forgot
-                    final_prompt = f"({concept_name}:1.3), {clean_desc}"
-                else:
-                    final_prompt = clean_desc
+            # Remove any background/quality tags LLM might have added
+            # (we'll add them ourselves for consistency)
+            remove_patterns = [
+                r',?\s*studio lighting',
+                r',?\s*professional product photography',
+                r',?\s*8k(\s+resolution)?',
+                r',?\s*sharp focus',
+                r',?\s*hyperrealistic(\s+photograph)?',
+                r',?\s*highly detailed(\s+textures)?',
+                r',?\s*white background',
+                r',?\s*clean background',
+                r',?\s*neutral background',
+                r',?\s*seamless\s+\w+\s+background',
+                r',?\s*on white surface',
+                r',?\s*placed on.*?(?=,|$)',
+                r',?\s*soft studio lighting',
+                r',?\s*isolated on.*?(?=,|$)',
+            ]
+            for pattern in remove_patterns:
+                clean_desc = re.sub(pattern, '', clean_desc, flags=re.IGNORECASE)
+            
+            # Clean up multiple commas and trailing commas
+            clean_desc = re.sub(r',\s*,', ',', clean_desc)
+            clean_desc = re.sub(r',\s*$', '', clean_desc)
+            clean_desc = clean_desc.strip()
+            
+            # Optionally add weight to main subject (if enabled in config)
+            if Config.Generate.SDXL_USE_PROMPT_WEIGHTS:
+                # Check if category is at the start and wrap it
+                if concept_name.lower() in clean_desc.lower()[:50]:
+                    # Find and wrap the category mention
+                    pattern = rf'\b({re.escape(concept_name)})\b'
+                    clean_desc = re.sub(
+                        pattern,
+                        f'({concept_name}:{Config.Generate.SDXL_SUBJECT_WEIGHT})',
+                        clean_desc,
+                        count=1,
+                        flags=re.IGNORECASE
+                    )
+            
+            # Combine: description + background + quality
+            final_prompt = f"{clean_desc}, {full_suffix}"
             
             return final_prompt
                        
         except Exception as e:
             print(f"⚠️ Warning: Failed to generate SDXL prompt: {e}")
-            # Fallback based on strategy
-            if self.prompt_strategy == 'simple':
-                return f"{features_text}{self.hardcoded_style}"
-            else:
-                return f"({concept_name}:1.3), {features_text}, photorealistic, 8k"
+            # Fallback
+            base_prompt = f"{features_text}"
+            return f"{base_prompt}, {full_suffix}"
     
     def _process_concept(self, concept_data):
         """
-        Process a concept following R2P workflow (enhanced):
-        1. Select N most representative images (CLIP centroid + random shuffle with seed)
-        2. Extract fingerprints from FIRST image (randomly chosen among top-N)
+        Process a concept following R2P workflow:
+        1. Select ONE representative image (CLIP centroid or first image)
+        2. Extract fingerprints from that image
         3. Generate SDXL prompt from fingerprints
-        4. Store ALL selected images in database
-        
+        4. Store the image in the database
+
         Args:
             concept_data: Dict with 'category', 'concept_id', 'images', etc.
-            
+
         Returns:
             tuple: (concept_key, entry_dict) for database
         """
         category = concept_data['category']
         concept_id = concept_data['concept_id']
         all_images = concept_data['images']
-        
-        # Select N images for this concept
+
+        # Select ONE representative image for this concept
         selected_images = self._select_images_for_concept(all_images)
-        
+
         if not selected_images:
             raise ValueError(f"No images selected for concept {concept_id}")
-        
-        # Extract fingerprints from FIRST image (R2P approach)
+
+        # Extract fingerprints from the selected image
         representative_image = selected_images[0]
-        
+
         cat_arg = None if self.use_clip_category else category
-        
+
         # Extract fingerprints using MiniCPM
         json_str = self.extractor.generate_caption(
             image_file=representative_image,
             cat=cat_arg,
-            concept_identifier=concept_id, 
+            concept_identifier=concept_id,
             args=self.mock_args
         )
-        
+
         # Clean and parse JSON response
         json_str = json_str.replace('```json', '').replace('```', '').strip()
         item_info = json.loads(json_str)
-        
+
         # Generate SDXL prompt and add to info
         sdxl_prompt = self._generate_sdxl_prompt(item_info)
         item_info["sdxl_prompt"] = sdxl_prompt
-        
+
         # Build concept key (R2P format)
         concept_key = f"<{concept_id}>"
-        
+
         # Build database entry
         entry = {
             "name": concept_id,
-            "image": selected_images,  # Store ALL selected images
+            "image": selected_images,  # Single-element list with the representative image
             "info": item_info,
             "category": category
         }
-        
+
         return concept_key, entry
     
     def _select_target_concepts(self, all_concepts):
@@ -526,6 +550,17 @@ class DatabaseBuilder:
     def _initialize_models(self):
         """Load the MiniCPM model and CLIP processor, initialize mock arguments."""
         print("\n[1/5] Loading Models...")
+        
+        # Check available RAM before loading
+        try:
+            import psutil
+            ram_gb = psutil.virtual_memory().available / (1024**3)
+            print(f"   💾 Available RAM: {ram_gb:.1f} GB")
+            if ram_gb < 20:
+                print(f"   ⚠️  WARNING: Low RAM! MiniCPM-o-2.6 needs ~30GB during loading")
+        except ImportError:
+            pass
+        
         print("   - MiniCPM for fingerprint extraction")
         self.extractor = MiniCPMDescription(model_path=self.model_path, device=self.device)
         self.mock_args = MockArgs()
@@ -619,7 +654,6 @@ class DatabaseBuilder:
         print(f"💾 Output: {self.output_path}")
         print(f"🔧 Device: {self.device}")
         print(f"📊 Split: {self.dataset_split}")
-        print(f"🖼️  Images per concept: {self.images_per_concept}")
         print(f"🎯 CLIP Selection: {self.use_clip_selection}")
         print(f"🌱 Seed: {self.seed}")
         print(f"✨ SDXL Prompt: {self.prompt_strategy.upper()}")
@@ -689,65 +723,70 @@ class DatabaseBuilder:
 def main():
     """
     Script entry point.
-    
+
     Creates a DatabaseBuilder instance with global configuration
     and executes the build process following R2P workflow.
-    
-    Output filename format: database_perva_{split}_{num_images}_{selection}.json
+
+    Output filename format (when Config.Database.CANONICAL_NAME=False):
+        database_perva_{split}_{selection}.json
     Examples:
-        - database_perva_train_1_clip.json      (CLIP-based selection)
-        - database_perva_train_3_simple.json    (Simple first-N selection)
-        - database_perva_test_all_clip.json     (All images, test split)
-        - database_perva_all_5_simple.json      (Both splits, 5 images, simple)
+        - database_perva_train_clip.json      (CLIP-based selection)
+        - database_perva_train_simple.json    (Simple first-image selection)
+        - database_perva_test_clip.json       (Test split, CLIP selection)
+        - database_perva_all_simple.json      (Both splits, simple selection)
+
+    When Config.Database.CANONICAL_NAME=True:
+        - database.json (canonical name for production/main branch)
     """
     # Calculate absolute paths based on script location
     # This works whether called from pipeline/ or root
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root_main = os.path.dirname(script_dir)  # Go up from pipeline/ to root
-    
+
     # Change working directory to project root
     # This ensures all relative paths (e.g., example_database/) work correctly
     os.chdir(project_root_main)
-    
+
     # Source data is always at project_root/data/perva-data
     source_data_absolute = os.path.join(project_root_main, "data", "perva-data")
-    
-    # Generate dynamic output filename based on configuration
-    img_count_str = str(IMAGES_PER_CONCEPT) if isinstance(IMAGES_PER_CONCEPT, int) else IMAGES_PER_CONCEPT
-    selection_method = "clip" if USE_CLIP_SELECTION else "simple"
-    output_filename = f"database_perva_{DATASET_SPLIT}_{img_count_str}_{selection_method}.json"
+
+    # Generate output filename: canonical "database.json" for production/main,
+    # or descriptive name for testing branches (controlled by Config.Database.CANONICAL_NAME)
+    if Config.Database.CANONICAL_NAME:
+        output_filename = "database.json"
+    else:
+        selection_method = "clip" if Config.BuildDatabase.USE_CLIP_SELECTION else "simple"
+        output_filename = f"database_perva_{Config.BuildDatabase.DATASET_SPLIT}_{selection_method}.json"
     output_path = os.path.join(project_root_main, "database", output_filename)
-    
+
     print(f"\n" + "="*70)
     print(f"DATABASE BUILDER - R2P Workflow")
     print(f"="*70)
     print(f"Configuration:")
-    print(f"  - Dataset Split: {DATASET_SPLIT}")
-    print(f"  - Images per Concept: {IMAGES_PER_CONCEPT}")
-    print(f"  - CLIP Selection: {USE_CLIP_SELECTION}")
-    print(f"  - Seed: {SEED}")
+    print(f"  - Dataset Split: {Config.BuildDatabase.DATASET_SPLIT}")
+    print(f"  - CLIP Selection: {Config.BuildDatabase.USE_CLIP_SELECTION}")
+    print(f"  - Seed: {Config.BuildDatabase.SEED}")
     strategy_names = {'simple': 'SIMPLE (baseline)', 'optimized': 'OPTIMIZED (R2P)', 'gemini': 'GEMINI (SOTA)'}
-    print(f"  - SDXL Prompt: {strategy_names.get(SDXL_PROMPT_STRATEGY, SDXL_PROMPT_STRATEGY)}")
-    print(f"  - Ignore Laion: {IGNORE_LAION}")
+    print(f"  - SDXL Prompt: {strategy_names.get(Config.BuildDatabase.SDXL_PROMPT_STRATEGY, Config.BuildDatabase.SDXL_PROMPT_STRATEGY)}")
+    print(f"  - Ignore Laion: {Config.BuildDatabase.IGNORE_LAION}")
     print(f"  - Output: {output_path}")
     print(f"="*70 + "\n")
-    
+
     builder = DatabaseBuilder(
         source_dir=source_data_absolute,
         output_path=output_path,
-        device=DEVICE,
-        model_path=MODEL_PATH,
-        dataset_split=DATASET_SPLIT,
-        images_per_concept=IMAGES_PER_CONCEPT,
-        debug_mode=DEBUG_MODE,
-        debug_limit=DEBUG_LIMIT,
-        use_clip_category=USE_CLIP_CATEGORY,
-        use_clip_selection=USE_CLIP_SELECTION,
-        ignore_laion=IGNORE_LAION,
-        seed=SEED,
-        prompt_strategy=SDXL_PROMPT_STRATEGY
+        device=Config.GPU.DEVICE,
+        model_path=Config.Models.VLM_MODEL,
+        dataset_split=Config.BuildDatabase.DATASET_SPLIT,
+        debug_mode=Config.BuildDatabase.DEBUG_MODE,
+        debug_limit=Config.BuildDatabase.DEBUG_LIMIT,
+        use_clip_category=Config.BuildDatabase.USE_CLIP_CATEGORY,
+        use_clip_selection=Config.BuildDatabase.USE_CLIP_SELECTION,
+        ignore_laion=Config.BuildDatabase.IGNORE_LAION,
+        seed=Config.BuildDatabase.SEED,
+        prompt_strategy=Config.BuildDatabase.SDXL_PROMPT_STRATEGY
     )
-    
+
     stats = builder.build_database()
     return stats
 

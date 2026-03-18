@@ -92,11 +92,11 @@ def _load_verifier():
     
     print("   📦 Loading MiniCPM Reasoner...")
     reasoner = MiniCPMReasoning(
-        model_path=Config.VLM_MODEL,
+        model_path=Config.Models.VLM_MODEL,
         device="cuda",
-        torch_dtype=torch.float16 if Config.USE_FP16 else torch.float32,
+        torch_dtype=torch.float16 if Config.GPU.USE_FP16 else torch.float32,
         attn_implementation="sdpa",
-        seed=Config.SEED
+        seed=Config.Generate.SEED
     )
     
     print("   📦 Loading CLIP Calculator...")
@@ -150,9 +150,9 @@ def iterative_refinement(
         reference_image_path: Immagine target da riprodurre
         fingerprints_dict: Attributi estratti (Fingerprint List)
         output_dir: Cartella output
-        max_iterations: Override Config.MAX_ITERATIONS
-        target_accuracy: Override Config.TARGET_ACCURACY  
-        min_improvement: Override Config.MIN_IMPROVEMENT
+        max_iterations: Override Config.Refine.MAX_ITERATIONS
+        target_accuracy: Override Config.Refine.TARGET_ACCURACY
+        min_improvement: Override Config.Refine.MIN_IMPROVEMENT
         vlm_high_confidence: Soglia alta per auto-pass (V5)
         vlm_low_confidence: Soglia bassa per auto-fail (V5)
         worst_k_threshold: Soglia per worst-k detection (V5)
@@ -169,9 +169,9 @@ def iterative_refinement(
         }
     """
     # Config with overrides
-    max_iter = max_iterations or Config.MAX_ITERATIONS
-    target_acc = target_accuracy or Config.TARGET_ACCURACY
-    min_impr = min_improvement or Config.MIN_IMPROVEMENT
+    max_iter = max_iterations or Config.Refine.MAX_ITERATIONS
+    target_acc = target_accuracy or Config.Refine.TARGET_ACCURACY
+    min_impr = min_improvement or Config.Refine.MIN_IMPROVEMENT
     
     print(f"\n{'='*60}")
     print(f"🔁 ITERATIVE REFINEMENT LOOP (verify V5)")
@@ -237,38 +237,38 @@ def iterative_refinement(
         )
         
         # Costruisci negative prompt cumulativo (letteratura: Prompt Reweighting)
-        current_negative = Config.NEGATIVE_PROMPT
+        current_negative = Config.Generate.NEGATIVE_PROMPT
         if negative_additions:
             current_negative += ", " + ", ".join(negative_additions[-5:])  # Keep last 5
             print(f"   🚫 Negatives: {', '.join(negative_additions[-3:])}")
-        
+
         generator = None
         try:
             print(f"   📦 Loading SDXL + IP-Adapter...")
             generator = _load_generator(temp_db_path, output_dir)
-            
+
             if generator is None:
                 print("   ❌ Failed to initialize SDXL pipeline")
                 break
-            
+
             # Load reference image
             ref_img = Image.open(reference_image_path).convert("RGB")
             ref_img = ref_img.resize(
-                (Config.REFERENCE_IMAGE_SIZE, Config.REFERENCE_IMAGE_SIZE), 
+                (Config.Images.REFERENCE_IMAGE_SIZE, Config.Images.REFERENCE_IMAGE_SIZE),
                 Image.Resampling.LANCZOS
             )
-            
+
             # Generate with SDXL + IP-Adapter
             print(f"   🎨 Generating candidate...")
             result = generator.pipe(
                 prompt=sdxl_prompt,
                 negative_prompt=current_negative,
                 ip_adapter_image=ref_img,
-                num_inference_steps=Config.NUM_INFERENCE_STEPS,
-                guidance_scale=Config.GUIDANCE_SCALE,
-                height=Config.OUTPUT_IMAGE_SIZE,
-                width=Config.OUTPUT_IMAGE_SIZE,
-                generator=torch.Generator(device=Config.DEVICE).manual_seed(Config.SEED + iteration)
+                num_inference_steps=Config.Generate.NUM_INFERENCE_STEPS,
+                guidance_scale=Config.Generate.GUIDANCE_SCALE,
+                height=Config.Images.OUTPUT_IMAGE_SIZE,
+                width=Config.Images.OUTPUT_IMAGE_SIZE,
+                generator=torch.Generator(device=Config.GPU.DEVICE).manual_seed(Config.Generate.SEED + iteration)
             ).images[0]
             
             result.save(output_filename)

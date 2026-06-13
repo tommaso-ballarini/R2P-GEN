@@ -89,145 +89,145 @@ class ClipScoreCalculator:
 # SEZIONE 2: LLM-LEVEL CONFIDENCE EXTRACTOR (THE WORKING SOLUTION)
 # =============================================================================
 
-from typing import Dict, Tuple, Optional
+# from typing import Dict, Tuple, Optional
 
-class LLMConfidenceExtractor:
-    """
-    Extracts token-level confidence by intercepting model.llm.generate().
-    This is the PRODUCTION-READY solution for MiniCPM-o-2_6.
+# class LLMConfidenceExtractor:
+#     """
+#     Extracts token-level confidence by intercepting model.llm.generate().
+#     This is the PRODUCTION-READY solution for MiniCPM-o-2_6.
     
-    Works by:
-    1. Patching model.llm.generate() to force output_scores=True
-    2. Capturing the GenerateOutput before .chat() discards it
-    3. Extracting Yes/No probabilities from first-token logits
-    """
+#     Works by:
+#     1. Patching model.llm.generate() to force output_scores=True
+#     2. Capturing the GenerateOutput before .chat() discards it
+#     3. Extracting Yes/No probabilities from first-token logits
+#     """
     
-    def __init__(self, model_interface, device="cuda"):
-        """
-        Args:
-            model_interface: The MiniCPMModel instance (reasoner.model_interface)
-        """
-        self.model = model_interface.model
-        self.tokenizer = model_interface.tokenizer
-        self.device = device
+#     def __init__(self, model_interface, device="cuda"):
+#         """
+#         Args:
+#             model_interface: The MiniCPMModel instance (reasoner.model_interface)
+#         """
+#         self.model = model_interface.model
+#         self.tokenizer = model_interface.tokenizer
+#         self.device = device
         
-        # Verify model structure
-        if not hasattr(self.model, 'llm'):
-            raise ValueError("Model does not have .llm attribute. This extractor is for MiniCPM-o models.")
+#         # Verify model structure
+#         if not hasattr(self.model, 'llm'):
+#             raise ValueError("Model does not have .llm attribute. This extractor is for MiniCPM-o models.")
         
-        self.llm = self.model.llm
+#         self.llm = self.model.llm
         
-        # Get Yes/No token IDs (confirmed from diagnostic: Yes=9454, No=2753)
-        self.yes_id = self._get_token_id("Yes")
-        self.no_id = self._get_token_id("No")
+#         # Get Yes/No token IDs (confirmed from diagnostic: Yes=9454, No=2753)
+#         self.yes_id = self._get_token_id("Yes")
+#         self.no_id = self._get_token_id("No")
         
-        print(f"🔧 LLMConfidenceExtractor initialized:")
-        print(f"   LLM type: {type(self.llm).__name__}")
-        print(f"   Yes token ID: {self.yes_id}")
-        print(f"   No token ID: {self.no_id}")
+#         print(f"🔧 LLMConfidenceExtractor initialized:")
+#         print(f"   LLM type: {type(self.llm).__name__}")
+#         print(f"   Yes token ID: {self.yes_id}")
+#         print(f"   No token ID: {self.no_id}")
     
-    def _get_token_id(self, word: str) -> int:
-        """Get token ID from vocabulary."""
-        vocab = self.tokenizer.get_vocab()
-        if word in vocab:
-            return vocab[word]
-        # Fallback: encode
-        tokens = self.tokenizer.encode(word, add_special_tokens=False)
-        return tokens[0] if tokens else -1
+#     def _get_token_id(self, word: str) -> int:
+#         """Get token ID from vocabulary."""
+#         vocab = self.tokenizer.get_vocab()
+#         if word in vocab:
+#             return vocab[word]
+#         # Fallback: encode
+#         tokens = self.tokenizer.encode(word, add_special_tokens=False)
+#         return tokens[0] if tokens else -1
     
-    def query_with_confidence(
-        self, 
-        image, 
-        prompt: str,
-        image2 = None,
-        max_new_tokens: int = 5
-    ) -> Tuple[Dict[str, float], str]:
-        """
-        Query the model and extract Yes/No confidence from logits.
+#     def query_with_confidence(
+#         self, 
+#         image, 
+#         prompt: str,
+#         image2 = None,
+#         max_new_tokens: int = 5
+#     ) -> Tuple[Dict[str, float], str]:
+#         """
+#         Query the model and extract Yes/No confidence from logits.
         
-        Args:
-            image: Primary image (PIL.Image or path)
-            prompt: Text prompt (should ask for Yes/No answer)
-            image2: Optional second image for pairwise comparison
-            max_new_tokens: Max tokens to generate
+#         Args:
+#             image: Primary image (PIL.Image or path)
+#             prompt: Text prompt (should ask for Yes/No answer)
+#             image2: Optional second image for pairwise comparison
+#             max_new_tokens: Max tokens to generate
             
-        Returns:
-            Tuple of (confidence_dict, response_text)
-        """
-        # Load images if paths
-        if isinstance(image, str):
-            image = Image.open(image).convert('RGB')
-        if image2 is not None and isinstance(image2, str):
-            image2 = Image.open(image2).convert('RGB')
+#         Returns:
+#             Tuple of (confidence_dict, response_text)
+#         """
+#         # Load images if paths
+#         if isinstance(image, str):
+#             image = Image.open(image).convert('RGB')
+#         if image2 is not None and isinstance(image2, str):
+#             image2 = Image.open(image2).convert('RGB')
         
-        # Build message
-        if image2 is not None:
-            content = [image, image2, prompt]
-        else:
-            content = [image, prompt]
+#         # Build message
+#         if image2 is not None:
+#             content = [image, image2, prompt]
+#         else:
+#             content = [image, prompt]
         
-        msgs = [{"role": "user", "content": content}]
+#         msgs = [{"role": "user", "content": content}]
         
-        # Storage for captured output
-        captured = {"output": None}
+#         # Storage for captured output
+#         captured = {"output": None}
         
-        # Store original generate
-        original_generate = self.llm.generate
+#         # Store original generate
+#         original_generate = self.llm.generate
         
-        def intercepting_generate(*args, **kwargs):
-            # Force score output
-            kwargs['output_scores'] = True
-            kwargs['return_dict_in_generate'] = True
-            result = original_generate(*args, **kwargs)
-            captured["output"] = result
-            return result
+#         def intercepting_generate(*args, **kwargs):
+#             # Force score output
+#             kwargs['output_scores'] = True
+#             kwargs['return_dict_in_generate'] = True
+#             result = original_generate(*args, **kwargs)
+#             captured["output"] = result
+#             return result
         
-        try:
-            # Patch
-            self.llm.generate = intercepting_generate
+#         try:
+#             # Patch
+#             self.llm.generate = intercepting_generate
             
-            # Call chat normally
-            response_text = self.model.chat(
-                msgs=msgs,
-                tokenizer=self.tokenizer,
-                max_new_tokens=max_new_tokens,
-                sampling=False  # Greedy for consistency
-            )
+#             # Call chat normally
+#             response_text = self.model.chat(
+#                 msgs=msgs,
+#                 tokenizer=self.tokenizer,
+#                 max_new_tokens=max_new_tokens,
+#                 sampling=False  # Greedy for consistency
+#             )
             
-            # Handle OmniOutput or string
-            if hasattr(response_text, 'text'):
-                response_text = response_text.text
-            elif not isinstance(response_text, str):
-                response_text = str(response_text)
+#             # Handle OmniOutput or string
+#             if hasattr(response_text, 'text'):
+#                 response_text = response_text.text
+#             elif not isinstance(response_text, str):
+#                 response_text = str(response_text)
             
-            # Extract confidence from captured output
-            output = captured["output"]
+#             # Extract confidence from captured output
+#             output = captured["output"]
             
-            if output is not None and hasattr(output, 'scores') and output.scores:
-                confidence = self._extract_confidence_from_scores(output.scores)
-                confidence['method'] = 'logits'
-                confidence['response'] = response_text
-            else:
-                # Fallback to text parsing
-                confidence = self._text_fallback(response_text)
-                confidence['response'] = response_text
+#             if output is not None and hasattr(output, 'scores') and output.scores:
+#                 confidence = self._extract_confidence_from_scores(output.scores)
+#                 confidence['method'] = 'logits'
+#                 confidence['response'] = response_text
+#             else:
+#                 # Fallback to text parsing
+#                 confidence = self._text_fallback(response_text)
+#                 confidence['response'] = response_text
             
-            return confidence, response_text
+#             return confidence, response_text
             
-        except Exception as e:
-            print(f"⚠️ LLMConfidenceExtractor error: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                'yes_confidence': 0.5,
-                'no_confidence': 0.5,
-                'method': 'error',
-                'error': str(e)
-            }, f"Error: {e}"
+#         except Exception as e:
+#             print(f"⚠️ LLMConfidenceExtractor error: {e}")
+#             import traceback
+#             traceback.print_exc()
+#             return {
+#                 'yes_confidence': 0.5,
+#                 'no_confidence': 0.5,
+#                 'method': 'error',
+#                 'error': str(e)
+#             }, f"Error: {e}"
             
-        finally:
-            # Always restore original
-            self.llm.generate = original_generate
+#         finally:
+#             # Always restore original
+#             self.llm.generate = original_generate
     
     def _extract_confidence_from_scores(self, scores: tuple) -> Dict[str, float]:
         """
@@ -370,33 +370,33 @@ class ModelAdapter:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
 
-class MiniCPMAdapter(ModelAdapter):
-    """Adapter for MiniCPM model message format (v2.6 strict)."""
+# class MiniCPMAdapter(ModelAdapter):
+#     """Adapter for MiniCPM model message format (v2.6 strict)."""
 
-    def format_image2image_plus_text_comparison_msgs(self, test_image, ret_image, prompt):
-        """
-        Prepara il payload per il Pairwise Reasoning: 2 Immagini + Prompt.
-        """
-        # Load images if paths are provided
-        if isinstance(test_image, str):
-            test_image = Image.open(test_image).convert('RGB')
-        if isinstance(ret_image, str):
-            ret_image = Image.open(ret_image).convert('RGB')
+#     def format_image2image_plus_text_comparison_msgs(self, test_image, ret_image, prompt):
+#         """
+#         Prepara il payload per il Pairwise Reasoning: 2 Immagini + Prompt.
+#         """
+#         # Load images if paths are provided
+#         if isinstance(test_image, str):
+#             test_image = Image.open(test_image).convert('RGB')
+#         if isinstance(ret_image, str):
+#             ret_image = Image.open(ret_image).convert('RGB')
             
-        # MiniCPM accetta una lista di oggetti nel content
-        return [{
-            'role': 'user', 
-            'content': [test_image, ret_image, prompt]
-        }]
+#         # MiniCPM accetta una lista di oggetti nel content
+#         return [{
+#             'role': 'user', 
+#             'content': [test_image, ret_image, prompt]
+#         }]
     
-    def format_text_options_msgs(self, test_image, prompt):
-        """
-        Prepara il payload standard: 1 Immagine + Prompt.
-        """
-        if isinstance(test_image, str):
-            test_image = Image.open(test_image).convert('RGB')
+#     def format_text_options_msgs(self, test_image, prompt):
+#         """
+#         Prepara il payload standard: 1 Immagine + Prompt.
+#         """
+#         if isinstance(test_image, str):
+#             test_image = Image.open(test_image).convert('RGB')
 
-        return [{
-            'role': 'user', 
-            'content': [test_image, prompt]
-        }]
+#         return [{
+#             'role': 'user', 
+#             'content': [test_image, prompt]
+#         }]

@@ -12,23 +12,53 @@ Configuration is organized by module for clarity:
 - Refine: Refinement loop settings
 - Images: Image sizing and processing
 - Paths: Directory paths (cluster-aware)
+
+Environment variables:
+  R2P_CLUSTER_MODE=true        → abilita cluster mode
+  R2P_MODELS_BASE=<path>       → override base directory modelli (cluster)
+  HF_HOME=<path>               → override HuggingFace cache (gestito esternamente / SLURM)
 """
 import os
+
+
+# ---------------------------------------------------------------------------
+# Helper: risolve path modelli in modo cluster-agnostico
+# ---------------------------------------------------------------------------
+# In cluster mode, imposta R2P_MODELS_BASE nel tuo .bashrc o script SLURM:
+#   export R2P_MODELS_BASE=/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface
+#
+# In locale, lascia vuoto → i modelli vengono scaricati da HuggingFace Hub
+#   (usa repo-id stringa, es. "openbmb/MiniCPM-o-2_6")
+
+_MODELS_BASE = os.environ.get("R2P_MODELS_BASE", "")
+
+def _model_path(repo_id: str, local_dirname: str) -> str:
+    """
+    Restituisce il path locale se R2P_MODELS_BASE è impostato,
+    altrimenti il repo-id HuggingFace (per download automatico).
+
+    Args:
+        repo_id:       es. "openbmb/MiniCPM-o-2_6"
+        local_dirname: nome cartella sotto R2P_MODELS_BASE,
+                       es. "MiniCPM-o-2_6"
+    """
+    if _MODELS_BASE:
+        return os.path.join(_MODELS_BASE, local_dirname)
+    return repo_id
+
 
 class Config:
     # ========================================================================
     # CLUSTER MODE CONFIGURATION
     # ========================================================================
     class Cluster:
-        """Cluster mode detection and base paths"""
+        """Cluster mode detection and base paths."""
 
-        # Set to True when running on SLURM cluster
-        # Can be controlled via environment variable: R2P_CLUSTER_MODE=true
+        # Controllato via env: R2P_CLUSTER_MODE=true
         MODE = os.environ.get("R2P_CLUSTER_MODE", "false").lower() == "true"
 
-        # Base paths (auto-detect based on mode)
         if MODE:
-            HOME_DIR = os.environ.get("HOME", "/home/tommaso.ballarini-1")
+            HOME_DIR = os.environ.get("HOME", "/home/user")
             BASE_DIR = os.path.join(HOME_DIR, "R2P-GEN")
             DATA_BASE = os.path.join(HOME_DIR, "data")
         else:
@@ -41,62 +71,94 @@ class Config:
     class BuildDatabase:
         """Configuration for pipeline/build_database.py"""
 
-        # Dataset Configuration
-        SOURCE_DATA_DIR = os.path.join(Cluster.DATA_BASE, "perva-data")  # Cluster-aware
-        DATASET_SPLIT = "train"              # Options: "train", "test", "all"
+        SOURCE_DATA_DIR = os.path.join(Cluster.DATA_BASE, "perva-data")
+        DATASET_SPLIT = "train"
 
-        # Run Settings
-        DEBUG_MODE = True                    # Set to False to process the entire dataset
-        DEBUG_LIMIT = 5                      # Number of concepts to process in debug mode
+        DEBUG_MODE = True
+        DEBUG_LIMIT = 5
 
-        # Feature Extraction Settings
-        USE_CLIP_CATEGORY = True             # True = Auto-detect category via CLIP; False = Use folder name
-        USE_CLIP_SELECTION = True            # True = Select most representative image via CLIP centroid
-                                              # False = Use first image (sorted numerically)
-        IGNORE_LAION = True                  # Ignore 'laion' subdirectories (R2P training data)
-        SEED = 42                            # Random seed for reproducible CLIP selection
+        USE_CLIP_CATEGORY = True
+        USE_CLIP_SELECTION = True
+        IGNORE_LAION = True
+        SEED = 42
 
-        # SDXL Prompt Generation Strategy
         # Options: 'simple', 'optimized', 'gemini'
-        SDXL_PROMPT_STRATEGY = 'gemini'      # 'simple' = Natural description + style suffix (baseline)
-                                              # 'optimized' = Hierarchical tags with weights (R2P enhanced)
-                                              # 'gemini' = Brand-first, ultra-concise (SOTA personalization)
+        SDXL_PROMPT_STRATEGY = 'gemini'
 
     # ========================================================================
     # DATABASE NAMING CONFIGURATION
     # ========================================================================
     class Database:
-        """Database file naming strategy"""
+        """Database file naming strategy."""
 
-        # True  → "database.json"  (canonical, for main branch / production)
-        # False → "database_perva_{split}_{method}.json" (descriptive, for testing branches)
+        # True  → "database.json"  (produzione)
+        # False → "database_perva_{split}_{method}.json"  (test/dev)
         CANONICAL_NAME = True
 
     # ========================================================================
     # MODELS CONFIGURATION
     # ========================================================================
     class Models:
-        """Model paths and identifiers"""
+        """
+        Tutti i modelli della pipeline.
 
-        VLM_MODEL = "openbmb/MiniCPM-o-2_6"
-        SDXL_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
+        In cluster mode: imposta R2P_MODELS_BASE nel SLURM script o .bashrc.
+        In locale: i repo_id vengono scaricati automaticamente da HuggingFace.
+
+        Ruoli:
+          VLM_MODEL    → verify.py + refine.py loop  (MiniCPM-o-2_6)
+          QWEN3_MODEL  → flux_loop.py reasoner        (Qwen3-VL-8B-Instruct)
+          JUDGE_MODEL  → judge.py Final Judge          (InternVL3_5-8B)
+          SDXL_MODEL   → generazione SDXL baseline
+          FLUX_MODEL   → generazione FLUX (flux_loop.py)
+          IP_ADAPTER_* → IP-Adapter per SDXL
+        """
+
+        # --- verify / refine loop ---
+        VLM_MODEL = _model_path(
+            repo_id="openbmb/MiniCPM-o-2_6",
+            local_dirname="MiniCPM-o-2_6",
+        )
+
+        # --- flux_loop.py reasoner (Qwen3-VL) ---
+        QWEN3_MODEL = _model_path(
+            repo_id="Qwen/Qwen3-VL-8B-Instruct",
+            local_dirname="Qwen3-VL-8B-Instruct",
+        )
+
+        # --- Final Judge (InternVL3_5-8B) — diverso da verify/refine ---
+        JUDGE_MODEL = _model_path(
+            repo_id="OpenGVLab/InternVL3-8B",
+            local_dirname="InternVL3_5-8B",
+        )
+
+        # --- Generatori ---
+        SDXL_MODEL = _model_path(
+            repo_id="stabilityai/stable-diffusion-xl-base-1.0",
+            local_dirname="stable-diffusion-xl-base-1.0",
+        )
+
+        FLUX_MODEL = _model_path(
+            repo_id="ostris/FLUX.1-schnell-2MP",   # placeholder: aggiorna con repo corretto
+            local_dirname="FLUX.2-klein-9B",
+        )
+
+        # --- IP-Adapter ---
         IP_ADAPTER_REPO = "h94/IP-Adapter"
         IP_ADAPTER_SUBFOLDER = "sdxl_models"
         IP_ADAPTER_WEIGHT_NAME = "ip-adapter_sdxl.bin"
-        QWEN_MODEL = "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface/Qwen3-VL-8B-Instruct"  # For Final Judge (judge.py)
-        FLUX_MODEL = "/leonardo_work/IscrC_MUSE/tballari/models_cache/FLUX.2-klein-9B"
 
     # ========================================================================
     # GPU CONFIGURATION
     # ========================================================================
     class GPU:
-        """GPU memory and performance settings"""
+        """GPU memory and performance settings."""
 
         DEVICE = "cuda"
         MEMORY_FRACTION = 0.9
         USE_FP16 = True
-        # Flush VRAM cache every N generations in the batch Generator loop.
-        # Set to 0 to disable mid-loop cache clearing (only cleared at cleanup()).
+        # Flush VRAM cache ogni N generazioni nel batch Generator loop.
+        # 0 = disabilitato (solo cleanup finale).
         CLEAR_CACHE_EVERY = 10
 
     # ========================================================================
@@ -108,34 +170,24 @@ class Config:
         IP_ADAPTER_SCALE_GLOBAL = 0.6
         NUM_INFERENCE_STEPS = 40
         GUIDANCE_SCALE = 7.5
-        SEED = 42  # Base seed: passed as torch.Generator to every SDXL .pipe() call
+        SEED = 42
 
-        # Use weights in SDXL prompts (e.g., "(bag:1.2)")
-        # Set to False for cleaner prompts with more refinement flexibility
         SDXL_USE_PROMPT_WEIGHTS = True
-
-        # Light weight for main subject (only used if SDXL_USE_PROMPT_WEIGHTS=True)
         SDXL_SUBJECT_WEIGHT = 1.2
 
-        # Background specification for generated images
         # Options: "white", "wooden_table", "gradient", "neutral", "none"
         SDXL_BACKGROUND_STYLE = "wooden_table"
 
-        # Background templates (used in prompt generation)
         SDXL_BACKGROUND_TEMPLATES = {
-            "white": "placed on clean white surface, seamless white background",
+            "white":        "placed on clean white surface, seamless white background",
             "wooden_table": "placed on wooden table, soft shadows, neutral background",
-            "gradient": "isolated on gradient white background, professional product shot",
-            "neutral": "on neutral surface, studio background",
-            "none": ""  # No background specification (not recommended)
+            "gradient":     "isolated on gradient white background, professional product shot",
+            "neutral":      "on neutral surface, studio background",
+            "none":         "",
         }
 
-        # Standard quality suffix for all prompts
         SDXL_QUALITY_SUFFIX = "professional product photography, 8k, sharp focus"
 
-        # Negative prompt to prevent artifacts
-        # Prevents background contamination and common SDXL artifacts
-        # Critical for layer-wise scaling: reinforces down blocks=0.0
         NEGATIVE_PROMPT = (
             "blurry, low quality, low resolution, distorted, deformed, "
             "(background contamination:1.3), (reference background leakage:1.2), "
@@ -147,22 +199,19 @@ class Config:
             "blur, out of focus"
         )
 
-        # IP-ADAPTER LAYER-WISE SCALING
-        # Strategy: Minimize background contamination, maximize identity preservation
-        # Based on InstantStyle research + R2P optimization
         USE_LAYERWISE_SCALING = True
         IP_ADAPTER_LAYER_WEIGHTS = {
             "down": {
-                "block_0": [0.0, 0.0],         # Zero background from reference
-                "block_1": [0.0, 0.0],         # Zero composition from reference
-                "block_2": [0.4, 0.7],         # Object shape preservation (smooth gradient)
+                "block_0": [0.0, 0.0],
+                "block_1": [0.0, 0.0],
+                "block_2": [0.4, 0.7],
             },
-            "mid": 0.9,                        # Very high semantic identity
+            "mid": 0.9,
             "up": {
-                "block_0": [0.6, 0.8, 0.9],    # Texture/color injection (3 layers)
-                "block_1": [0.95, 0.95, 0.95], # Maximum material fidelity (3 layers)
-                "block_2": [0.85, 0.85],       # Fine details preservation (2 layers)
-                "block_3": [0.7],              # Final refinement (1 layer)
+                "block_0": [0.6, 0.8, 0.9],
+                "block_1": [0.95, 0.95, 0.95],
+                "block_2": [0.85, 0.85],
+                "block_3": [0.7],
             }
         }
 
@@ -170,32 +219,43 @@ class Config:
     # REFINEMENT LOOP CONFIGURATION
     # ========================================================================
     class Refine:
-        """Configuration for pipeline/refine.py"""
+        """Configuration for pipeline/refine.py and flux_loop.py"""
 
         MAX_ITERATIONS = 3
-        TARGET_ACCURACY = 0.95  # 95% accuracy to exit loop
-        MIN_IMPROVEMENT = 0.05  # Minimum improvement between iterations
+        TARGET_ACCURACY = 0.95
+        MIN_IMPROVEMENT = 0.05
 
     # ========================================================================
     # IMAGES CONFIGURATION
     # ========================================================================
     class Images:
-        """Image sizing and processing settings"""
+        """Image sizing and processing settings."""
 
         MAX_IMAGE_DIM = 896
-        FALLBACK_DIM = 448      # Reduced dimension in case of OOM
-        REFERENCE_IMAGE_SIZE = 512  # Size to resize reference images for IP-Adapter
-        OUTPUT_IMAGE_SIZE = 1024    # Generated image size
+        FALLBACK_DIM = 448
+        REFERENCE_IMAGE_SIZE = 512
+        OUTPUT_IMAGE_SIZE = 1024
 
     # ========================================================================
     # PATHS CONFIGURATION (Cluster-Aware)
     # ========================================================================
     class Paths:
-        """Directory paths (auto-adjusted for cluster mode)"""
+        """Directory paths (auto-adjusted for cluster mode)."""
 
-        OUTPUT_DIR = os.path.join(Cluster.BASE_DIR, "output") if Cluster.MODE else "output"
-        DATASET_DIR = os.path.join(Cluster.DATA_BASE, "perva-data") if Cluster.MODE else "data/perva-data"
+        OUTPUT_DIR   = os.path.join(Cluster.BASE_DIR, "output")   if Cluster.MODE else "output"
+        DATASET_DIR  = os.path.join(Cluster.DATA_BASE, "perva-data") if Cluster.MODE else "data/perva-data"
         DATABASE_DIR = os.path.join(Cluster.BASE_DIR, "database") if Cluster.MODE else "database"
+
+    # ========================================================================
+    # BACKWARD COMPATIBILITY ALIASES
+    # ========================================================================
+    # Evita di rompere codice esistente che usa Config.DEVICE, Config.VLM_MODEL, ecc.
+
+    DEVICE         = GPU.DEVICE
+    USE_FP16       = GPU.USE_FP16
+    VLM_MODEL      = Models.VLM_MODEL
+    TARGET_ACCURACY = Refine.TARGET_ACCURACY
+    MAX_IMAGE_DIM  = Images.MAX_IMAGE_DIM
 
     # ========================================================================
     # HELPER METHODS
@@ -207,3 +267,20 @@ class Config:
             cls.Generate.SDXL_BACKGROUND_STYLE,
             cls.Generate.SDXL_BACKGROUND_TEMPLATES["white"]
         )
+
+    @classmethod
+    def print_summary(cls) -> None:
+        """Stampa un riepilogo della configurazione attiva."""
+        print("=" * 60)
+        print("R2P-GEN Config Summary")
+        print("=" * 60)
+        print(f"  Cluster mode : {cls.Cluster.MODE}")
+        print(f"  R2P_MODELS_BASE: {_MODELS_BASE or '(not set — HuggingFace Hub)'}")
+        print(f"  VLM (verify) : {cls.Models.VLM_MODEL}")
+        print(f"  Qwen3 (flux) : {cls.Models.QWEN3_MODEL}")
+        print(f"  Judge        : {cls.Models.JUDGE_MODEL}")
+        print(f"  FLUX         : {cls.Models.FLUX_MODEL}")
+        print(f"  Device       : {cls.GPU.DEVICE}  |  FP16: {cls.GPU.USE_FP16}")
+        print(f"  Max iter     : {cls.Refine.MAX_ITERATIONS}")
+        print(f"  Target acc   : {cls.Refine.TARGET_ACCURACY:.0%}")
+        print("=" * 60)

@@ -83,7 +83,8 @@ class Config:
         IP_ADAPTER_REPO = "h94/IP-Adapter"
         IP_ADAPTER_SUBFOLDER = "sdxl_models"
         IP_ADAPTER_WEIGHT_NAME = "ip-adapter_sdxl.bin"
-        QWEN_MODEL = "Qwen/Qwen2-VL-7B-Instruct"  # For Final Judge (judge.py)
+        QWEN_MODEL = "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface/Qwen3-VL-8B-Instruct"  # For Final Judge (judge.py)
+        FLUX_MODEL = "/leonardo_work/IscrC_MUSE/tballari/models_cache/FLUX.2-klein-9B"
 
     # ========================================================================
     # GPU CONFIGURATION

@@ -107,12 +107,8 @@ CUDA_VISIBLE_DEVICES=0 python flux_loop.py \
     --output $OUTPUT_DIR
 
 # ==========================================
-# 4. AVVIO TEXT FIX STAGE (Su GPU 0)
+# [DEPRECATO] TEXT FIX STAGE — da reimplementare
+# In flux_loop.py --stage text_fix era un placeholder vuoto.
+# Se serve, reimplementare con la logica in archive/legacy/pipeline/text_fix.py
 # ==========================================
-echo "✍️  Avvio Text Fix Stage..."
-CUDA_VISIBLE_DEVICES=0 python flux_loop.py \
-    --stage text_fix \
-    --database $DATABASE_JSON \
-    --output $OUTPUT_DIR
-
 echo "🏁 Job Completato!"

@@ -12,8 +12,6 @@ fallback generico per chiavi non previste.
 # Mapping chiave grezza -> frase naturale
 # ---------------------------------------------------------------------------
 # Ogni template riceve {value} = il contenuto del campo fingerprint.
-# Le chiavi qui sotto sono quelle osservate nei fingerprint R2P-GEN
-# (vedi pipeline/prompts/sdxl_prompts.py e r2p_core/database/mini_cpm_info.py).
 
 _DETAIL_TEMPLATES = {
     "shape":             "with a {value} shape",
@@ -31,8 +29,7 @@ _DETAIL_TEMPLATES = {
 _EXCLUDED_KEYS = {"category", "color", "material", "general", "sdxl_prompt"}
 
 # Valori "negativi" del VLM (campo non applicabile/non rilevato).
-# Stesso set di NEGATIVE_TRIGGERS usato in build_database_legacy.py per
-# coerenza: questi valori NON vanno inseriti nel prompt FLUX, altrimenti
+# Questi valori NON vanno inseriti nel prompt FLUX, altrimenti
 # si ottengono frasi insensate come "featuring a no visible pattern pattern".
 _NEGATIVE_TRIGGERS = [
     "no visible", "none", "n/a", "not readable",

@@ -3,7 +3,7 @@
 Final Judge per R2P-GEN Pipeline.
 
 IMPORTANTE: Il Final Judge usa un modello DIVERSO da verify.py!
-- verify.py / refine.py loop → MiniCPM / Qwen3-VL (verifica durante generazione)
+- verify.py / refine.py loop → Qwen3-VL (verifica durante generazione)
 - judge.py → InternVL3_5-8B (valutazione finale indipendente)
 
 Questo garantisce una valutazione imparziale: il modello che ha guidato

@@ -1,22 +1,11 @@
 """
-Centralized configuration for the R2P-GEN pipeline.
-All configurable parameters should be defined here.
-
-Configuration is organized by module for clarity:
-- Cluster: Cluster mode detection and base paths
-- BuildDatabase: Settings for database/fingerprint extraction
-- Database: Database file naming strategy
-- Models: Model paths and identifiers
-- GPU: GPU memory and performance settings
-- Generate: Settings for image generation
-- Refine: Refinement loop settings
-- Images: Image sizing and processing
-- Paths: Directory paths (cluster-aware)
+Centralized configuration for the R2P-GEN pipeline (FLUX Edition).
 
 Environment variables:
-  R2P_CLUSTER_MODE=true        → abilita cluster mode
-  R2P_MODELS_BASE=<path>       → override base directory modelli (cluster)
-  HF_HOME=<path>               → override HuggingFace cache (gestito esternamente / SLURM)
+  R2P_CLUSTER_MODE=true       → abilita cluster mode
+  R2P_MODELS_BASE=<path>      → override base directory modelli (cluster)
+  HF_HOME=<path>              → override HuggingFace cache (gestito esternamente / SLURM)
+  R2P_FLUX_MODEL=<path>       → override path modello FLUX
 """
 import os
 
@@ -83,9 +72,6 @@ class Config:
         IGNORE_LAION = True
         SEED = 42
 
-        # Options: 'simple', 'optimized', 'gemini'
-        SDXL_PROMPT_STRATEGY = 'gemini'
-
     # ========================================================================
     # DATABASE NAMING CONFIGURATION
     # ========================================================================
@@ -106,12 +92,6 @@ class Config:
         In locale: i repo_id vengono scaricati automaticamente da HuggingFace.
         """
 
-        # --- verify / refine loop ---
-        VLM_MODEL = _model_path(
-            repo_id="openbmb/MiniCPM-o-2_6",
-            local_dirname="MiniCPM-o-2_6",
-        )
-
         # --- flux_loop.py reasoner (Qwen3-VL) ---
         QWEN3_MODEL = _model_path(
             repo_id="Qwen/Qwen3-VL-8B-Instruct",
@@ -124,12 +104,6 @@ class Config:
             local_dirname="InternVL3_5-8B",
         )
 
-        # --- Generatori ---
-        SDXL_MODEL = _model_path(
-            repo_id="stabilityai/stable-diffusion-xl-base-1.0",
-            local_dirname="stable-diffusion-xl-base-1.0",
-        )
-
         _FLUX_PATH = os.environ.get(
             "R2P_FLUX_MODEL",
             os.path.join(os.environ.get("R2P_MODELS_BASE", ""), "FLUX.2-klein-9B")
@@ -137,11 +111,6 @@ class Config:
         )
         FLUX_MODEL = _FLUX_PATH
         FLUX_TEXT_URL = "http://127.0.0.1:8767"
-
-        # --- IP-Adapter ---
-        IP_ADAPTER_REPO = "h94/IP-Adapter"
-        IP_ADAPTER_SUBFOLDER = "sdxl_models"
-        IP_ADAPTER_WEIGHT_NAME = "ip-adapter_sdxl.bin"
 
         CLIP_MODEL = os.path.join(
             "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface",
@@ -168,52 +137,19 @@ class Config:
     # ========================================================================
     class Generate:
         """Configuration for pipeline/generate.py"""
-        IP_ADAPTER_SCALE_GLOBAL = 0.6
-        NUM_INFERENCE_STEPS = 40
+        NUM_INFERENCE_STEPS = 4
         GUIDANCE_SCALE = 7.5
         SEED = 42
 
-        SDXL_USE_PROMPT_WEIGHTS = True
-        SDXL_SUBJECT_WEIGHT = 1.2
-
         # Options: "white", "wooden_table", "gradient", "neutral", "none"
-        SDXL_BACKGROUND_STYLE = "wooden_table"
+        BACKGROUND_STYLE = "wooden_table"
 
-        SDXL_BACKGROUND_TEMPLATES = {
+        BACKGROUND_TEMPLATES = {
             "white":        "placed on clean white surface, seamless white background",
             "wooden_table": "placed on wooden table, soft shadows, neutral background",
             "gradient":     "isolated on gradient white background, professional product shot",
             "neutral":      "on neutral surface, studio background",
             "none":         "",
-        }
-
-        SDXL_QUALITY_SUFFIX = "professional product photography, 8k, sharp focus"
-
-        NEGATIVE_PROMPT = (
-            "blurry, low quality, low resolution, distorted, deformed, "
-            "(background contamination:1.3), (reference background leakage:1.2), "
-            "(original background visible:1.2), "
-            "artifact, watermark, text overlay, logo overlay, signature, "
-            "oversaturated, overexposed, underexposed, noise, grain, "
-            "worst quality, jpeg artifacts, duplicate, cropped, "
-            "unrealistic proportions, anatomical errors, "
-            "blur, out of focus"
-        )
-
-        USE_LAYERWISE_SCALING = True
-        IP_ADAPTER_LAYER_WEIGHTS = {
-            "down": {
-                "block_0": [0.0, 0.0],
-                "block_1": [0.0, 0.0],
-                "block_2": [0.4, 0.7],
-            },
-            "mid": 0.9,
-            "up": {
-                "block_0": [0.6, 0.8, 0.9],
-                "block_1": [0.95, 0.95, 0.95],
-                "block_2": [0.85, 0.85],
-                "block_3": [0.7],
-            }
         }
 
     # ========================================================================
@@ -250,7 +186,6 @@ class Config:
     # ========================================================================
     DEVICE          = GPU.DEVICE
     USE_FP16        = GPU.USE_FP16
-    VLM_MODEL       = Models.VLM_MODEL
     TARGET_ACCURACY = Refine.TARGET_ACCURACY
     MAX_IMAGE_DIM   = Images.MAX_IMAGE_DIM
 
@@ -260,9 +195,9 @@ class Config:
     @classmethod
     def get_background_template(cls) -> str:
         """Get the current background template string."""
-        return cls.Generate.SDXL_BACKGROUND_TEMPLATES.get(
-            cls.Generate.SDXL_BACKGROUND_STYLE,
-            cls.Generate.SDXL_BACKGROUND_TEMPLATES["white"]
+        return cls.Generate.BACKGROUND_TEMPLATES.get(
+            cls.Generate.BACKGROUND_STYLE,
+            cls.Generate.BACKGROUND_TEMPLATES["white"]
         )
 
     @classmethod
@@ -273,8 +208,7 @@ class Config:
         print("=" * 60)
         print(f"  Cluster mode : {cls.Cluster.MODE}")
         print(f"  R2P_MODELS_BASE: {_MODELS_BASE or '(not set — HuggingFace Hub)'}")
-        print(f"  VLM (verify) : {cls.Models.VLM_MODEL}")
-        print(f"  Qwen3 (flux) : {cls.Models.QWEN3_MODEL}")
+        print(f"  Reasoner     : {cls.Models.QWEN3_MODEL}")
         print(f"  Judge        : {cls.Models.JUDGE_MODEL}")
         print(f"  FLUX         : {cls.Models.FLUX_MODEL}")
         print(f"  Device       : {cls.GPU.DEVICE}  |  FP16: {cls.GPU.USE_FP16}")

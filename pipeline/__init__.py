@@ -1,23 +1,12 @@
-# pipeline/__init__.py
 """
 R2P-GEN Pipeline Module (FLUX Edition)
 
-Contains only the components actually used by the active workflow
-orchestrated by flux_loop.py:
-
-- generate: Image generation with FLUX (Img2Img)
-- verify: Verification of generated images (MiniCPM + CLIP, V5)
-- judge: Independent final evaluation (CLIP/DINO/VQA)
-- metrics: Quantitative metrics (CLIP-I, CLIP-T, DINO-I, TIFA)
-- utils2: Utilities for GPU memory management and file handling
-
-NOTE: build_database and refine have been moved to their respective
-*_legacy.py files and are NOT imported here, because:
-  - build_database_legacy depends on modules (database.mini_cpm_info,
-    database.create_train_test_perva_split) that may not exist
-    in the current environment, and would cause `import pipeline` to fail.
-  - refine_legacy references Generator._initialize_pipeline(),
-    a method of the old SDXL Generator, which is not present in the FLUX Generator.
+Components orchestrated by flux_loop.py:
+  - generate: Image generation with FLUX Img2Img
+  - verify: Verification with Qwen3-VL + CLIP
+  - judge: Final evaluation with InternVL3_5-8B + CLIP/DINO/VQA
+  - metrics: Quantitative metrics (CLIP-I, CLIP-T, DINO-I, TIFA)
+  - utils2: GPU memory management and file handling utilities
 """
 
 from .generate import Generator

@@ -7,7 +7,6 @@ Questo modulo orchestra la pipeline R2P-GEN modulare:
 - Stage 3: refine (Aggancio API per rigenerare i falliti)
 - Stage 4: final_judge (Valutazione severa con InternVL2)
 - Stage 5: full_auto (Esegue tutto in sequenza)
-- Stage 6: text_fix (Nuovo stage per correzioni testuali)
 """
 
 import os
@@ -545,22 +544,6 @@ def stage_final_judge(database_path: str, output_dir: str) -> None:
     print(f"\n📁 Risultati finali → {results_path}")
 
 # ---------------------------------------------------------------------------
-# Stage 5 — Text Fix (NUOVO STAGE)
-# ---------------------------------------------------------------------------
-
-def stage_text_fix(database_path: str, output_dir: str) -> None:
-    """
-    Fase 5: Correzione testuale (placeholder).
-    Da implementare secondo le esigenze specifiche.
-    """
-    print(f"\n{'='*70}\n✏️  STAGE: TEXT FIX\n{'='*70}")
-    print(f"   Database: {database_path}")
-    print(f"   Output dir: {output_dir}")
-    print("   [TODO] Implementare la logica di correzione testuale.")
-    # Qui puoi aggiungere il codice per la correzione dei testi,
-    # ad esempio caricare il database, elaborare i prompt, correggere descrizioni, ecc.
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -568,10 +551,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="R2P-GEN Modulare (FLUX Edition)")
     parser.add_argument("--database", type=str, required=True)
     parser.add_argument("--output",   type=str, default="output")
-    # MODIFICA: Aggiunto "text_fix" alle scelte dello stage
     parser.add_argument("--stage",
                         choices=["generate_only", "verify_base",
-                                 "refine", "text_fix", "final_judge", "full_auto"],
+                                 "refine", "final_judge", "full_auto"],
                         required=True)
     parser.add_argument("--num-shards",  type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -588,10 +570,6 @@ if __name__ == "__main__":
 
     elif args.stage == "refine":
         stage_refine(args.database, rejected_path, args.output)
-
-    # MODIFICA: Aggiunto il branch per il nuovo stage
-    elif args.stage == "text_fix":
-        stage_text_fix(args.database, args.output)
 
     elif args.stage == "final_judge":
         stage_final_judge(args.database, args.output)

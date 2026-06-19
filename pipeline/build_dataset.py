@@ -1,28 +1,17 @@
 """
-pipeline/build_dataset.py
+pipeline/build_dataset_diego.py
 
 Costruisce il database di fingerprints per la pipeline R2P-GEN (FLUX Edition).
+VARIANTE DIEGO: Text-Driven Semantic View Selection. 
+Usa il Text Encoder di CLIP per forzare la selezione dell'immagine che mostra 
+chiaramente dettagli strutturali, testi e loghi, evitando il representation smoothing.
 
 Workflow:
   1. Scopre tutti i concetti in perva-data (train/categoria/concept_id/)
-  2. Seleziona l'immagine rappresentativa via CLIP centroid
-  3. Estrae i fingerprints con Qwen3-VL (JSON strutturato)
-  4. Salva database.json con concept_dict + path_to_concept
+  2. Seleziona le TOP-3 immagini rappresentative via Text-Image Cosine Similarity
+  3. Estrae i fingerprints con Qwen3-VL (JSON strutturato) dalla TOP-1
+  4. Salva database.json con concept_dict + path_to_concept (includendo i backup per recovery)
 
-FIX 8: l'immagine rappresentativa selezionata via CLIP centroid viene ora
-salvata esplicitamente in entry["representative_image"], cosi' generate.py
-e flux_loop.py possono usarla invece di ricadere sempre su images[0].
-
-Il flux_prompt NON viene generato qui: è costruito on-the-fly in flux_loop.py
-tramite build_flux_prompt(fingerprints, target_context), che è deterministica
-e dipende dal contesto target (può variare tra run diversi).
-
-Variabili d'ambiente:
-  R2P_PERVA_DATA   → path della cartella perva-data
-                     default: /leonardo_work/IscrC_MUSE/tballari/perva-data
-  R2P_MODELS_BASE  → base path modelli HuggingFace
-                     default: usa repo-id (download automatico)
-  R2P_CLUSTER_MODE → "true" per attivare cluster mode in config.py
 """
 
 import os
@@ -48,17 +37,13 @@ from config import Config
 # Costanti / env
 # ---------------------------------------------------------------------------
 
-# Path perva-data: env var > fallback cluster Leonardo
 _DEFAULT_PERVA = "/leonardo_work/IscrC_MUSE/tballari/perva-data"
 PERVA_DATA_DIR = os.environ.get("R2P_PERVA_DATA", _DEFAULT_PERVA)
 
-
 # ---------------------------------------------------------------------------
-# Prompt per Qwen3-VL (adattato da get_detailed_input_msgs_household di R2P)
+# Prompt per Qwen3-VL
 # ---------------------------------------------------------------------------
 
-# Esempio one-shot: stesso oggetto usato nel repo originale R2P (wnr = piatto ceramica).
-# Se l'immagine non è disponibile, il sistema cade in zero-shot automaticamente.
 _ONESHOT_IMAGE_PATH = os.path.join(project_root, "example_database", "wnr.jpg")
 
 _ANSWER_FORMAT = {
@@ -89,19 +74,6 @@ def _build_extraction_messages(
     category: str,
     concept_id: str,
 ) -> list:
-    """
-    Costruisce i messaggi per Qwen3-VL per estrarre fingerprints in JSON.
-
-    Usa one-shot se l'immagine esempio è disponibile, zero-shot altrimenti.
-
-    Args:
-        image:      PIL Image dell'oggetto da analizzare
-        category:   categoria rilevata via CLIP (es. "bag")
-        concept_id: identificatore unico del concetto (es. "alx")
-
-    Returns:
-        Lista messaggi nel formato [{"role": ..., "content": [...]}]
-    """
     question_test = (
         f"Describe the {category} in the image identified by the concept-identifier "
         f"<{concept_id}> and highlight what makes it unique.\n"
@@ -144,75 +116,82 @@ def _build_extraction_messages(
 
 
 def _parse_json_response(raw: str) -> dict:
-    """
-    Pulisce e parsa la risposta JSON di Qwen3-VL.
-    Gestisce markdown fences e testo extra attorno al JSON.
-    """
-    # Rimuovi fences markdown
     cleaned = raw.strip().strip("```json").strip("```").strip()
-
-    # Estrai solo il blocco JSON se c'è testo extra
     match = re.search(r'\{.*\}', cleaned, re.DOTALL)
     if match:
         cleaned = match.group(0)
     else:
         raise ValueError(f"Nessun JSON trovato nella risposta: {raw[:200]}")
-
     return json.loads(cleaned)
 
 
 # ---------------------------------------------------------------------------
-# CLIP image selector (mantenuto da build_database originale)
+# NUOVO SELETTORE: Semantic CLIP Selector (Text-Driven)
 # ---------------------------------------------------------------------------
 
-class _CLIPSelector:
-    """Seleziona l'immagine più rappresentativa di un concept via CLIP centroid."""
+class _SemanticCLIPSelector:
+    """
+    Seleziona le immagini più rappresentative calcolando la similarità
+    tra le features visive e un prompt testuale ideale (Text Prior).
+    Risolve il problema del "Representation Smoothing" dei centroidi.
+    """
 
     def __init__(self, device: str = "cuda"):
         from transformers import CLIPModel, CLIPProcessor
         self.device = device
-        print("   📎 Loading CLIP for image selection...")
+        print("   📎 Loading Semantic CLIP for Top-K text-driven image selection...")
         self.model = CLIPModel.from_pretrained(Config.Models.CLIP_MODEL).to(device).eval()
         self.processor = CLIPProcessor.from_pretrained(Config.Models.CLIP_MODEL)
 
     @torch.no_grad()
-    def select(self, image_paths: list[str], seed: int = 42) -> str:
+    def select(self, image_paths: list[str], category: str, k: int = 3) -> list[str]:
         """
-        Restituisce il path dell'immagine più vicina al centroide CLIP.
-
-        Args:
-            image_paths: lista di path immagini del concept
-            seed:        seed per shuffle deterministico tra le top-N (compatibilità R2P)
-
-        Returns:
-            Path dell'immagine selezionata
+        Restituisce i path delle top-K immagini più simili al prompt ideale.
         """
         if len(image_paths) == 1:
-            return image_paths[0]
+            return [image_paths[0]]
 
+        # 1. Definizione del Text Prior (Calamita Semantica)
+        text_prompt = (
+            f"A clear frontal photo of a {category}, perfectly showing "
+            "brand logos, readable text, and distinct structural features."
+        )
+
+        # 2. Caricamento immagini
         images = [Image.open(p).convert("RGB") for p in image_paths]
-        inputs = self.processor(images=images, return_tensors="pt", padding=True)
+        
+        # 3. Processamento input Misto (Testo + Immagini)
+        inputs = self.processor(
+            text=[text_prompt], 
+            images=images, 
+            return_tensors="pt", 
+            padding=True, 
+            truncation=True
+        )
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-        output = self.model.get_image_features(**inputs)
-        # get_image_features può restituire un tensore o un oggetto — gestiamo entrambi
-        if hasattr(output, 'image_embeds'):
-            features = output.image_embeds
-        elif hasattr(output, 'pooler_output'):
-            features = output.pooler_output
-        else:
-            features = output  # già un tensore
+        # 4. Estrazione Embeddings (Modello congiunto)
+        outputs = self.model(**inputs)
+        image_embeds = outputs.image_embeds
+        text_embeds = outputs.text_embeds
 
+        # Normalizzazione
         import torch.nn.functional as F
-        features = F.normalize(features, p=2, dim=-1)
+        image_embeds = F.normalize(image_embeds, p=2, dim=-1)
+        text_embeds = F.normalize(text_embeds, p=2, dim=-1)
 
-        centroid = features.mean(dim=0, keepdim=True)
-        centroid = F.normalize(centroid, p=2, dim=-1)
+        # 5. Calcolo Cosine Similarity (Dot Product)
+        similarities = (image_embeds @ text_embeds.T).squeeze()
+        
+        if similarities.dim() == 0:
+            return [image_paths[0]]
 
-        similarities = (features @ centroid.T).squeeze()
-        best_idx = similarities.argmax().item()
+        # 6. Selezione delle Top-K (Evita errori se le immagini totali sono meno di K)
+        actual_k = min(k, len(image_paths))
+        top_scores, top_indices = torch.topk(similarities, k=actual_k)
 
-        return image_paths[best_idx]
+        # Ritorna lista ordinata di paths (il più alto prima)
+        return [image_paths[idx.item()] for idx in top_indices]
 
     def cleanup(self):
         del self.model
@@ -224,18 +203,6 @@ class _CLIPSelector:
 # ---------------------------------------------------------------------------
 
 class DatabaseBuilder:
-    """
-    Costruisce il database fingerprints per R2P-GEN.
-
-    Per ogni concept:
-      1. Seleziona immagine rappresentativa (CLIP centroid)
-      2. Estrae fingerprints con Qwen3-VL
-      3. Salva in database.json (incluso il path dell'immagine rappresentativa,
-         FIX 8: campo "representative_image")
-
-    Il flux_prompt viene costruito on-the-fly in flux_loop.py.
-    """
-
     VALID_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'}
 
     def __init__(
@@ -258,14 +225,12 @@ class DatabaseBuilder:
         self.seed            = seed            or Config.BuildDatabase.SEED
         self.device          = device          or Config.GPU.DEVICE
 
-        # Output path
         if Config.Database.CANONICAL_NAME:
             out_name = "database.json"
         else:
             out_name = f"database_perva_{self.dataset_split}.json"
         self.output_path = os.path.join(Config.Paths.DATABASE_DIR, out_name)
 
-        # Lazy loaded
         self._reasoner   = None
         self._clip_sel   = None
 
@@ -273,10 +238,6 @@ class DatabaseBuilder:
             "concept_dict":   {},
             "path_to_concept": {},
         }
-
-    # ------------------------------------------------------------------
-    # Lazy loaders
-    # ------------------------------------------------------------------
 
     @property
     def reasoner(self):
@@ -296,21 +257,15 @@ class DatabaseBuilder:
     @property
     def clip_selector(self):
         if self._clip_sel is None and self.use_clip_sel:
-            self._clip_sel = _CLIPSelector(device=self.device)
+            self._clip_sel = _SemanticCLIPSelector(device=self.device)
         return self._clip_sel
 
-    # ------------------------------------------------------------------
-    # Dataset discovery
-    # ------------------------------------------------------------------
-
     def _get_concepts(self) -> list[dict]:
-        """Scansiona perva-data e restituisce la lista di tutti i concept."""
         abs_path = os.path.abspath(self.perva_data_dir)
         print(f"   🔍 perva-data: {abs_path}")
 
         if not os.path.exists(abs_path):
             print(f"   ❌ Directory non trovata: {abs_path}")
-            print(f"      Imposta R2P_PERVA_DATA per sovrascrivere il path.")
             return []
 
         splits = ["train", "test"] if self.dataset_split == "all" else [self.dataset_split]
@@ -319,7 +274,6 @@ class DatabaseBuilder:
         for split in splits:
             split_dir = os.path.join(abs_path, split)
             if not os.path.exists(split_dir):
-                print(f"   ⚠️  Split '{split}' non trovato, skip.")
                 continue
 
             for category in sorted(os.listdir(split_dir)):
@@ -352,16 +306,9 @@ class DatabaseBuilder:
 
         return concepts
 
-    # ------------------------------------------------------------------
-    # Fingerprint extraction
-    # ------------------------------------------------------------------
-
     def _extract_fingerprints(self, image, category, concept_id):
         msgs = _build_extraction_messages(image, category, concept_id)
-        # I messaggi sono già in formato Qwen3-VL nativo —
-        # li passiamo direttamente a model_interface.chat() senza adapter
         output = self.reasoner.model_interface.chat(msgs)
-        # chat() restituisce (dict, str) da Qwen3VLModel oppure dict da ModelInterface
         if isinstance(output, tuple):
             _, raw_text = output
         else:
@@ -369,75 +316,52 @@ class DatabaseBuilder:
         fingerprints = _parse_json_response(raw_text)
         return fingerprints
 
-    # ------------------------------------------------------------------
-    # Process single concept
-    # ------------------------------------------------------------------
-
     def _process_concept(self, concept_data: dict) -> tuple[str, dict]:
         """
-        Processa un singolo concept:
-          1. Seleziona immagine rappresentativa
-          2. Estrae fingerprints
-          3. Ritorna (concept_key, entry)
-
-        FIX 8: l'immagine rappresentativa selezionata viene salvata in
-        entry["representative_image"], cosi' generate.py e flux_loop.py
-        possono usarla invece di ricadere sempre su images[0].
+        Processa un singolo concept usando il nuovo Text-Driven Selector.
         """
         category   = concept_data["category"]
         concept_id = concept_data["concept_id"]
         images     = concept_data["images"]
 
-        # Selezione immagine rappresentativa
+        # 1. Selezione immagini Top-K guidata dal Testo
         if self.use_clip_sel and self.clip_selector is not None:
-            representative = self.clip_selector.select(images, seed=self.seed)
+            top_k_images = self.clip_selector.select(images, category=category, k=3)
+            representative = top_k_images[0] # La vincitrice assoluta
         else:
+            top_k_images = [images[0]]
             representative = images[0]
 
-        # Carica immagine
+        # Carica l'immagine vincitrice
         image = Image.open(representative).convert("RGB")
 
-        # Estrai fingerprints
+        # Estrai fingerprints dalla vincitrice
         fingerprints = self._extract_fingerprints(image, category, concept_id)
 
         concept_key = f"<{concept_id}>"
         entry = {
             "name":     concept_id,
-            "image":    images,          # tutte le immagini del concept
-            # FIX 8: path dell'immagine scelta via CLIP centroid. Usata da
-            # generate.py (immagine sorgente per Img2Img) e da flux_loop.py
-            # (immagine di riferimento per verify/judge), con fallback a
-            # images[0] se questo campo manca (database vecchi).
+            "image":    images,             # tutte le immagini del concept
             "representative_image": representative,
-            "info":     fingerprints,    # fingerprints JSON (niente sdxl_prompt)
+            "top_k_images": top_k_images,   # NUOVO CAMPO: storicizza i backup per il recovery
+            "info":     fingerprints,       # fingerprints JSON
             "category": category,
         }
 
         return concept_key, entry
 
-    # ------------------------------------------------------------------
-    # Build
-    # ------------------------------------------------------------------
-
     def build(self) -> dict:
-        """
-        Esegue la pipeline completa di build del database.
-
-        Returns:
-            dict con success_count, total_concepts, database_path
-        """
         print("\n" + "="*70)
-        print("BUILD DATABASE — R2P-GEN FLUX Edition")
+        print("BUILD DATABASE — R2P-GEN FLUX Edition (DIEGO VARIANTE SEMANTICA)")
         print("="*70)
         Config.print_summary()
         print(f"  perva-data   : {self.perva_data_dir}")
         print(f"  split        : {self.dataset_split}")
-        print(f"  CLIP select  : {self.use_clip_sel}")
+        print(f"  SemanticCLIP : {self.use_clip_sel}")
         print(f"  debug        : {self.debug_mode} (limit={self.debug_limit})")
         print(f"  output       : {self.output_path}")
         print("="*70 + "\n")
 
-        # 1. Scopri concetti
         print("[1/3] Discovering concepts...")
         all_concepts = self._get_concepts()
         if not all_concepts:
@@ -450,7 +374,6 @@ class DatabaseBuilder:
             all_concepts = all_concepts[:self.debug_limit]
             print(f"   DEBUG MODE: processing solo {len(all_concepts)} concepts.")
 
-        # 2. Estrai fingerprints
         print("\n[2/3] Extracting fingerprints (Qwen3-VL)...")
         success = 0
         for concept_data in tqdm(all_concepts, desc="Concepts"):
@@ -465,7 +388,6 @@ class DatabaseBuilder:
                 print(f"\n   ⚠️  Errore su '{cid}': {e}")
                 continue
 
-        # 3. Salva
         print(f"\n[3/3] Saving database → {self.output_path}")
         os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
         with open(self.output_path, "w", encoding="utf-8") as f:
@@ -474,7 +396,6 @@ class DatabaseBuilder:
         print(f"\n✅ Done! {success}/{len(all_concepts)} concepts processati.")
         print(f"   Database: {os.path.abspath(self.output_path)}")
 
-        # Cleanup modelli
         if self._reasoner is not None:
             del self._reasoner
             self._reasoner = None
@@ -489,26 +410,21 @@ class DatabaseBuilder:
             "database_path":  os.path.abspath(self.output_path),
         }
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Build R2P-GEN fingerprint database")
+    parser = argparse.ArgumentParser(description="Build R2P-GEN fingerprint database (Semantic Variant)")
     parser.add_argument("--perva-data",  type=str, default=None,
                         help="Path a perva-data (default: R2P_PERVA_DATA env var)")
     parser.add_argument("--split",       type=str, default=None,
                         choices=["train", "test", "all"],
-                        help="Dataset split (default: Config.BuildDatabase.DATASET_SPLIT)")
+                        help="Dataset split")
     parser.add_argument("--debug",       action="store_true", default=None,
                         help="Debug mode: processa solo i primi N concepts")
     parser.add_argument("--debug-limit", type=int, default=None,
-                        help="Numero concepts in debug mode (default: Config.BuildDatabase.DEBUG_LIMIT)")
+                        help="Numero concepts in debug mode")
     parser.add_argument("--no-clip",     action="store_true",
-                        help="Disabilita CLIP selection (usa prima immagine)")
+                        help="Disabilita Semantic CLIP selection")
     args = parser.parse_args()
 
     builder = DatabaseBuilder(

@@ -38,12 +38,6 @@ class Generator:
         """Carica FLUX ottimizzando al massimo l'uso della memoria."""
         print(f"\n🚀 Inizializzazione FLUX Img2Img in corso...")
         
-        # Patch Diffusers per l'ottimizzazione della memoria (SDPA)
-        _original_sdpa = F.scaled_dot_product_attention
-        def _stripped_sdpa(*args, **kwargs):
-            kwargs.pop('enable_gqa', None)
-            return _original_sdpa(*args, **kwargs)
-        diffusers.models.attention_processor.F.scaled_dot_product_attention = _stripped_sdpa
 
         # ATTENZIONE: Assicurati di aggiungere FLUX_MODEL nel tuo config.py
         # Es: Config.Models.FLUX_MODEL = "black-forest-labs/FLUX.1-schnell" o il path locale
@@ -52,12 +46,14 @@ class Generator:
         self.pipe = DiffusionPipeline.from_pretrained(
             model_name_or_path,
             torch_dtype=torch.bfloat16,
-            trust_remote_code=True
+            trust_remote_code=True,
+            # Aggiungi questa riga per un boost massiccio:
+            attn_implementation="flash_attention_2" 
         )
         
-        # CRUCIALE: Offload su CPU. Permette al modello di pesare meno in VRAM 
-        # quando non genera, lasciando spazio a MiniCPM/Qwen per la verifica.
-        self.pipe.enable_model_cpu_offload()
+        
+        #self.pipe.enable_model_cpu_offload()
+        self.pipe.to(self.device)   
         print("✅ FLUX caricato con successo (CPU Offload attivato).")
 
     def generate_all(self):
@@ -115,12 +111,13 @@ class Generator:
                 generator = torch.Generator(device=self.device).manual_seed(Config.Generate.SEED)
                 
                 # 5. Generazione con FLUX Img2Img
-                output_img = self.pipe(
-                    prompt=flux_prompt,
-                    image=seed_img,
-                    num_inference_steps=4,
-                    generator=generator
-                ).images[0]
+                with torch.inference_mode():
+                    output_img = self.pipe(
+                        prompt=flux_prompt,
+                        image=seed_img,
+                        num_inference_steps=4,
+                        generator=generator
+                    ).images[0]
                 
                 # 6. Salvataggio Output (percorso assoluto)
                 out_path = os.path.join(self.output_dir, f"{concept_id}_generated.png")

@@ -136,6 +136,7 @@ class Config:
                 if os.environ.get("R2P_MODELS_BASE") else "black-forest-labs/FLUX.1-schnell"
         )
         FLUX_MODEL = _FLUX_PATH
+        FLUX_TEXT_URL = "http://127.0.0.1:8767"
 
         # --- IP-Adapter ---
         IP_ADAPTER_REPO = "h94/IP-Adapter"

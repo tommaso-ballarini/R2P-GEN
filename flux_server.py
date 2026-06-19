@@ -4,6 +4,7 @@ flux_server.py
 Server FastAPI minimale che espone FLUX come endpoint HTTP.
 Lanciato da recovery_pipeline.sh in background con flux_test_work.
 Gira sulla porta 8766.
+Processa sempre un'immagine alla volta per evitare OOM.
 """
 
 import os
@@ -17,7 +18,7 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 
-# ── Patch Diffusers (identica a quella in recovery_pipeline_v2.py) ──────────
+# ── Patch Diffusers ──────────────────────────────────────────────────────────
 import diffusers.models.attention_processor
 import torch.nn.functional as F
 
@@ -32,7 +33,6 @@ from diffusers import DiffusionPipeline
 # ── Configurazione ───────────────────────────────────────────────────────────
 FLUX_MODEL_DIR = "/leonardo_work/IscrC_MUSE/tballari/models_cache/FLUX.2-klein-9B"
 STEPS          = 4
-
 
 # ── Caricamento modello (una volta sola all'avvio) ───────────────────────────
 print("🚀 Caricamento FLUX in VRAM...")
@@ -52,12 +52,41 @@ app = FastAPI()
 class GenerateRequest(BaseModel):
     prompts: list[str]
     seeds: list[int]
-    source_image_b64: Optional[list[str]] = None  # lista di immagini base64, o None per text2img
+    source_image_b64: Optional[list[str]] = None
 
 
 class GenerateResponse(BaseModel):
-    images_b64: list[str]   # immagini risultato in base64
-    errors: list[str]       # stringa vuota se OK, messaggio di errore altrimenti
+    images_b64: list[str]
+    errors: list[str]
+
+
+# ── Logica generazione singola immagine ──────────────────────────────────────
+
+def _generate_one(prompt: str, seed: int, source_b64: Optional[str]) -> tuple[str, str]:
+    """
+    Genera una singola immagine. Ritorna (image_b64, error_string).
+    error_string è "" se OK, messaggio di errore altrimenti.
+    """
+    try:
+        generator = torch.Generator(device="cuda:0").manual_seed(seed)
+        kwargs = {
+            "prompt": [prompt],
+            "num_inference_steps": STEPS,
+            "generator": [generator],
+        }
+        if source_b64 is not None:
+            img_bytes = base64.b64decode(source_b64)
+            source_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            kwargs["image"] = [source_img]
+
+        output = pipe(**kwargs).images[0]
+
+        buf = io.BytesIO()
+        output.save(buf, format="JPEG")
+        return base64.b64encode(buf.getvalue()).decode(), ""
+
+    except Exception as e:
+        return "", f"FLUX Crash: {e}"
 
 
 # ── Endpoint ─────────────────────────────────────────────────────────────────
@@ -69,43 +98,18 @@ def health():
 
 @app.post("/generate", response_model=GenerateResponse)
 def generate(req: GenerateRequest):
+    """
+    Accetta batch di N immagini ma le processa una alla volta
+    per evitare OOM. Il chiamante non deve cambiare nulla.
+    """
     images_b64 = []
     errors = []
 
-    has_img = req.source_image_b64 is not None
-
-    try:
-        generators = [
-            torch.Generator(device="cuda:0").manual_seed(s)
-            for s in req.seeds
-        ]
-
-        kwargs = {
-            "prompt": req.prompts,
-            "num_inference_steps": STEPS,
-            "generator": generators,
-        }
-
-        if has_img:
-            source_images = []
-            for b64 in req.source_image_b64:
-                img_bytes = base64.b64decode(b64)
-                source_images.append(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
-            kwargs["image"] = source_images
-
-        outputs = pipe(**kwargs).images
-
-        for img in outputs:
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG")
-            images_b64.append(base64.b64encode(buf.getvalue()).decode())
-            errors.append("")
-
-    except Exception as e:
-        # Se FLUX crasha sull'intero batch, segna errore per ogni immagine
-        for _ in req.prompts:
-            images_b64.append("")
-            errors.append(f"FLUX Crash: {e}")
+    for i in range(len(req.prompts)):
+        source_b64 = req.source_image_b64[i] if req.source_image_b64 else None
+        img_b64, error = _generate_one(req.prompts[i], req.seeds[i], source_b64)
+        images_b64.append(img_b64)
+        errors.append(error)
 
     return GenerateResponse(images_b64=images_b64, errors=errors)
 
@@ -113,9 +117,7 @@ def generate(req: GenerateRequest):
 # ── Avvio ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Server FLUX via FastAPI")
-    parser.add_argument("--port", type=int, default=8766, help="Porta su cui avviare il server")
+    parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
-    
     print(f"🌐 Avvio Uvicorn sulla porta dinamica: {args.port}...")
-    
     uvicorn.run(app, host="127.0.0.1", port=args.port)

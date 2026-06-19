@@ -61,7 +61,7 @@ echo "Avvio build database..."
 python -u pipeline/build_dataset.py \
     --split train \
     --debug \
-    --debug-limit 50
+    --debug-limit 2
 
 # ===========================================================================
 # 5. Verifica output

@@ -4,9 +4,9 @@
 #SBATCH --partition=boost_usr_prod
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --gres=gpu:2
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/full_e2e/%j.out
 #SBATCH --error=logs/full_e2e/%j.err
@@ -28,6 +28,7 @@ module load cudnn
 cd /leonardo/home/userexternal/tballari/R2P-GEN
 source $HOME/miniconda3/bin/activate FM_env
 
+export PYTHONPATH=$PWD:$PYTHONPATH
 mkdir -p logs/full_e2e
 
 # ===========================================================================
@@ -44,112 +45,229 @@ export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-export CUDA_VISIBLE_DEVICES=0
 
-# Directory dedicata a questo test — completamente indipendente da test_100
-# e test_debug, nessun file condiviso.
+# Directory completamente dedicata a questo test — indipendente da test_100
 OUTPUT_DIR=/leonardo_work/IscrC_MUSE/tballari/FM_Data/output/test_e2e
 DATABASE=$OUTPUT_DIR/database_e2e.json
+FLUX_PORT=8766
 
-mkdir -p $OUTPUT_DIR
+mkdir -p "$OUTPUT_DIR"
 
 # ===========================================================================
-# 3. Stage 0 — Build database (10 concetti)
+# Cleanup: spegne il FLUX server anche in caso di interruzione
+# ===========================================================================
+FLUX_PID=""
+cleanup() {
+    if [ -n "$FLUX_PID" ]; then
+        echo "🛑 Chiudo server FLUX (PID=$FLUX_PID)..."
+        kill "$FLUX_PID" 2>/dev/null
+        wait "$FLUX_PID" 2>/dev/null
+        echo "   Server FLUX terminato."
+    fi
+}
+trap cleanup EXIT
+
+# ===========================================================================
+# STAGE 0 — BUILD DATABASE (10 concetti, GPU 0)
 # ===========================================================================
 echo ""
 echo "=========================================================="
-echo "STAGE 0 — BUILD DATABASE (debug_limit=10)"
+echo "STAGE 0/4 — BUILD DATABASE (debug_limit=10)"
 echo "=========================================================="
 START=$(date +%s)
 
-python -u pipeline/build_database.py \
+CUDA_VISIBLE_DEVICES=0 python -u pipeline/build_database.py \
     --perva-data $R2P_PERVA_DATA \
     --debug \
-    --debug-limit 10 \
-    --output $DATABASE
+    --debug-limit 10
 
 END=$(date +%s)
-echo "⏱️  Tempo build_database: $((END - START))s"
+echo "⏱️  Build completato in $((END - START))s"
 
-# Verifica che il database sia stato creato correttamente
+# build_database.py scrive in database/database.json per default —
+# copiamo nella output dir dedicata per tenere tutto isolato
+cp database/database.json "$DATABASE"
+
 if [ ! -f "$DATABASE" ]; then
-    echo "❌ database_e2e.json NON trovato — pipeline interrotta."
+    echo "❌ database_e2e.json non trovato — interruzione pipeline."
     exit 1
 fi
 
-N_CONCEPTS=$(python3 -c "
+python3 -c "
 import json
 with open('$DATABASE') as f:
-    d = json.load(f)
-print(len(d.get('concept_dict', {})))
-")
-echo "✅ Database creato: $N_CONCEPTS concetti"
+    db = json.load(f)
+print(f'   ✅ Concetti nel database: {len(db.get(\"concept_dict\", {}))}')
+"
 
 # ===========================================================================
-# 4. Stage 1-4 — Full auto (generate → verify → refine → judge)
+# STAGE 1 — GENERATE (GPU 0)
 # ===========================================================================
 echo ""
 echo "=========================================================="
-echo "STAGE 1-4 — FULL AUTO PIPELINE"
+echo "STAGE 1/4 — GENERATE"
 echo "=========================================================="
 START=$(date +%s)
 
-python -u flux_loop.py \
-    --stage full_auto \
-    --database $DATABASE \
-    --output $OUTPUT_DIR
+CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+    --stage generate_only \
+    --database "$DATABASE" \
+    --output   "$OUTPUT_DIR"
 
 END=$(date +%s)
-echo "⏱️  Tempo full_auto: $((END - START))s  ($((( END - START ) / 60))m)"
+echo "⏱️  Generate completato in $((END - START))s"
+
+PNG_COUNT=$(find "$OUTPUT_DIR" -maxdepth 1 -name "*_generated.png" | wc -l)
+echo "   PNG generati: $PNG_COUNT"
+if [ "$PNG_COUNT" -eq 0 ]; then
+    echo "❌ Nessuna immagine generata — interruzione pipeline."
+    exit 1
+fi
 
 # ===========================================================================
-# 5. Verifica output completo
+# STAGE 2 — VERIFY BASE (GPU 0)
 # ===========================================================================
 echo ""
-echo "--- Output check ---"
+echo "=========================================================="
+echo "STAGE 2/4 — VERIFY BASE"
+echo "=========================================================="
+START=$(date +%s)
 
-# Immagini generate
-N_GEN=$(find "$OUTPUT_DIR" -maxdepth 1 -name "*_generated.png" | wc -l)
-echo "Immagini *_generated.png:  $N_GEN"
+CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+    --stage verify_base \
+    --database "$DATABASE" \
+    --output   "$OUTPUT_DIR"
 
-# rejected_concepts.json
-if [ -f "$OUTPUT_DIR/rejected_concepts.json" ]; then
-    N_REJ=$(python3 -c "import json; print(len(json.load(open('$OUTPUT_DIR/rejected_concepts.json'))))")
-    echo "✅ rejected_concepts.json: $N_REJ concetti rifiutati al verify base"
-else
-    echo "⚠️  rejected_concepts.json non trovato (tutti passed al primo verify?)"
+END=$(date +%s)
+echo "⏱️  Verify completato in $((END - START))s"
+
+REJECTED_PATH="$OUTPUT_DIR/rejected_concepts.json"
+if [ ! -f "$REJECTED_PATH" ]; then
+    echo "❌ rejected_concepts.json non trovato — interruzione pipeline."
+    exit 1
 fi
 
-# recovery_results.json
-if [ -f "$OUTPUT_DIR/recovery_results.json" ]; then
-    python3 -c "
+REJECTED_COUNT=$(python3 -c "
 import json
-with open('$OUTPUT_DIR/recovery_results.json') as f:
+with open('$REJECTED_PATH') as f:
     r = json.load(f)
-n_rec   = sum(1 for d in r.values() if d.get('status') == 'recovered')
-n_grave = sum(1 for d in r.values() if d.get('status') == 'unrecoverable')
-print(f'✅ recovery_results.json: {len(r)} nel refine → {n_rec} recovered, {n_grave} graveyard')
-"
+print(len(r))
+")
+echo "   Concetti rejected: $REJECTED_COUNT"
+
+# ===========================================================================
+# STAGE 3 — REFINE (GPU 0: Qwen3 | GPU 1: FLUX server)
+# ===========================================================================
+if [ "$REJECTED_COUNT" -eq 0 ]; then
+    echo "   ✅ Tutti i concetti hanno passato il verify. Refine saltato."
 else
-    echo "⚠️  recovery_results.json non trovato (nessun concetto è entrato nel refine?)"
+    echo ""
+    echo "=========================================================="
+    echo "STAGE 3/4 — REFINE (Qwen3 su GPU 0 | FLUX su GPU 1)"
+    echo "=========================================================="
+
+    echo "🚀 Avvio server FLUX in background sulla GPU 1 (porta $FLUX_PORT)..."
+    CONDA_PYTHON=$WORK/tballari/envs/FM_env/bin/python
+    CUDA_VISIBLE_DEVICES=1 $CONDA_PYTHON flux_server.py --port $FLUX_PORT \
+        > "logs/full_e2e/flux_server_${SLURM_JOB_ID}.log" 2>&1 &
+    FLUX_PID=$!
+
+    echo "⏳ Attendo che il server FLUX sia pronto (max 10 min)..."
+    FLUX_READY=0
+    for i in $(seq 1 60); do
+        if curl -s "http://127.0.0.1:$FLUX_PORT/health" > /dev/null 2>&1; then
+            echo "   ✅ FLUX Server pronto! (dopo ~$((i * 10))s)"
+            FLUX_READY=1
+            break
+        fi
+        sleep 10
+    done
+
+    if [ "$FLUX_READY" -eq 0 ]; then
+        echo "❌ FLUX Server non risponde dopo 10 minuti — interruzione pipeline."
+        exit 1
+    fi
+
+    START=$(date +%s)
+
+    CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+        --stage refine \
+        --database "$DATABASE" \
+        --output   "$OUTPUT_DIR"
+
+    END=$(date +%s)
+    echo "⏱️  Refine completato in $((END - START))s"
+
+    # Spegni il server FLUX — non serve più per il final_judge
+    kill "$FLUX_PID" 2>/dev/null
+    wait "$FLUX_PID" 2>/dev/null
+    FLUX_PID=""
+    echo "   🛑 Server FLUX spento."
 fi
 
-# final_judge_results.json
-if [ -f "$OUTPUT_DIR/final_judge_results.json" ]; then
-    python3 -c "
-import json
-with open('$OUTPUT_DIR/final_judge_results.json') as f:
-    r = json.load(f)
-print(f'✅ final_judge_results.json: {len(r)} concetti valutati')
-for cid, data in r.items():
-    m = data.get('metrics', {})
-    print(f'   {cid}: CLIP-I={m.get(\"clip_i\", 0):.3f} '
-          f'| DINO-I={m.get(\"dino_i\", 0):.3f} '
-          f'| TIFA={m.get(\"tifa_score\", 0):.1%}')
+# ===========================================================================
+# STAGE 4 — FINAL JUDGE (GPU 0)
+# ===========================================================================
+echo ""
+echo "=========================================================="
+echo "STAGE 4/4 — FINAL JUDGE"
+echo "=========================================================="
+START=$(date +%s)
+
+CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+    --stage final_judge \
+    --database "$DATABASE" \
+    --output   "$OUTPUT_DIR"
+
+END=$(date +%s)
+echo "⏱️  Final judge completato in $((END - START))s"
+
+# ===========================================================================
+# REPORT FINALE
+# ===========================================================================
+echo ""
+echo "--- Report finale ---"
+python3 -c "
+import json, os
+
+output_dir = '$OUTPUT_DIR'
+database   = '$DATABASE'
+
+with open(database) as f:
+    db = json.load(f)
+total = len(db.get('concept_dict', {}))
+
+png_count = len([f for f in os.listdir(output_dir) if f.endswith('_generated.png')])
+print(f'  Concetti database  : {total}')
+print(f'  Immagini generate  : {png_count}')
+
+rej_path = os.path.join(output_dir, 'rejected_concepts.json')
+if os.path.exists(rej_path):
+    with open(rej_path) as f:
+        rej = json.load(f)
+    print(f'  Verify passed      : {total - len(rej)}/{total}')
+    print(f'  Verify rejected    : {len(rej)}/{total}')
+
+rec_path = os.path.join(output_dir, 'recovery_results.json')
+if os.path.exists(rec_path):
+    with open(rec_path) as f:
+        rec = json.load(f)
+    recovered = sum(1 for v in rec.values() if v.get('status') == 'recovered')
+    graveyard = sum(1 for v in rec.values() if v.get('status') == 'unrecoverable')
+    print(f'  Refine recovered   : {recovered}')
+    print(f'  Refine graveyard   : {graveyard}')
+
+judge_path = os.path.join(output_dir, 'final_judge_results.json')
+if os.path.exists(judge_path):
+    with open(judge_path) as f:
+        judge = json.load(f)
+    print(f'  Judge valutati     : {len(judge)}')
+    for cid, data in judge.items():
+        m = data.get('metrics', {})
+        print(f'   {cid}: CLIP-I={m.get(\"clip_i\",0):.3f} '
+              f'| DINO-I={m.get(\"dino_i\",0):.3f} '
+              f'| TIFA={m.get(\"tifa_score\",0):.1%}')
 "
-else
-    echo "❌ final_judge_results.json NON trovato"
-fi
 
 echo "=========================================================="
 echo "Job finished at $(date)"

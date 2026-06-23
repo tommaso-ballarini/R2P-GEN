@@ -55,24 +55,41 @@ from pipeline.utils2 import cleanup_gpu
 
 @dataclass
 class JudgeResult:
-    """Evaluation result from the Final Judge — three raw metrics, no aggregation."""
+    """Complete evaluation result from the Final Judge."""
+    # Core scores
+    final_score: float = 0.0
+    passed: bool = False
+
+    # Individual metrics
     clip_i: float = 0.0
     clip_t: float = 0.0
     dino_i: float = 0.0
     tifa_score: float = 0.0
+
+    # VQA Details
     attributes_present: List[str] = field(default_factory=list)
     attributes_missing: List[str] = field(default_factory=list)
+    vqa_responses: Dict[str, Dict] = field(default_factory=dict)
+
+    # Metadata
+    threshold_used: float = 0.0
+    metrics_breakdown: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
         return {
+            "final_score": self.final_score,
+            "passed": self.passed,
             "metrics": {
-                "clip_i":       self.clip_i,
-                "clip_t":       self.clip_t,
-                "dino_i":       self.dino_i,
-                "tifa_score":   self.tifa_score,
+                "clip_i": self.clip_i,
+                "clip_t": self.clip_t,
+                "dino_i": self.dino_i,
+                "tifa_score": self.tifa_score
             },
             "attributes_present": self.attributes_present,
             "attributes_missing": self.attributes_missing,
+            "vqa_responses": self.vqa_responses,
+            "threshold": self.threshold_used,
+            "breakdown": self.metrics_breakdown
         }
 
 
@@ -107,12 +124,13 @@ class FinalJudge:
     def __init__(
         self,
         device: str = None,
+        threshold: float = None,
         use_dino: bool = True,
         use_clip: bool = True,
         use_vqa: bool = True,
         vlm_model_path: str = None,
         torch_dtype: torch.dtype = torch.bfloat16,
-        attn_implementation: str = "eager",
+        attn_implementation: str = "flash_attention_2",
     ):
         """
         Initialize the Final Judge with InternVL3_5-8B.
@@ -128,6 +146,7 @@ class FinalJudge:
             attn_implementation: 'flash_attention_2' o 'sdpa'
         """
         self.device = device or Config.DEVICE
+        self.threshold = threshold or Config.TARGET_ACCURACY
         self.use_dino = use_dino
         self.use_clip = use_clip
         self.use_vqa = use_vqa
@@ -135,12 +154,14 @@ class FinalJudge:
         self._torch_dtype = torch_dtype
         self._attn_implementation = attn_implementation
 
+        # Lazy loaded
         self._reasoner = None
-        self._reasoner_cls = None
         self._metrics_calc = None
 
         print(f"⚖️  [JUDGE] Initialized Final Judge (Independent Evaluator)")
         print(f"   Model: InternVL3_5-8B @ {self.vlm_model_path}")
+        print(f"   Attn:  {attn_implementation}  |  dtype: {torch_dtype}")
+        print(f"   Threshold: {self.threshold:.0%}")
         print(f"   Metrics: CLIP={use_clip}, DINO={use_dino}, VQA={use_vqa}")
 
     # ========================================================================
@@ -172,11 +193,6 @@ class FinalJudge:
                     torch_dtype=self._torch_dtype,
                     attn_implementation=self._attn_implementation,
                 )
-                # FIX: salva il riferimento alla classe — l'import sopra e'
-                # locale a questa property e NON e' visibile in altri metodi
-                # (es. _vqa_evaluate_attribute), che quindi non possono fare
-                # "InternVL3_5Reasoning._resize(...)" direttamente.
-                self._reasoner_cls = InternVL3_5Reasoning
                 print(f"      ✅ InternVL3_5-8B loaded successfully")
             except Exception as e:
                 print(f"   ❌ InternVL3_5-8B load failed: {e}")
@@ -188,20 +204,70 @@ class FinalJudge:
     # VQA EVALUATION (TIFA-style)
     # ========================================================================
 
-    def _vqa_evaluate_attribute(self, image: Image.Image, question: str) -> Dict:
+    def _vqa_evaluate_attribute(
+        self,
+        image: Image.Image,
+        question: str
+    ) -> Dict:
+        """
+        Ask a Yes/No question about an image using InternVL3_5.
+
+        Args:
+            image: PIL Image to evaluate
+            question: Binary question (expects Yes/No)
+
+        Returns:
+            Dict with 'answer', 'is_present', 'confidence', 'raw_response'
+        """
         reasoner = self.reasoner
         if reasoner is None:
-            return {"is_present": False, "raw_response": "VLM not available"}
+            return {
+                "answer": "no",
+                "is_present": False,
+                "confidence": 0.0,
+                "raw_response": "VLM not available"
+            }
 
-        image = self._reasoner_cls._resize(image, max_dim=896)
-        prompt_text = f"{question} Answer ONLY 'Yes' or 'No'."
-        formatted = reasoner.adapter.format_attribute_based_text_options_msgs(image, prompt_text)
+        # Ridimensiona se necessario (speculare a _resize in InternVL3_5Reasoning)
+        image = InternVL3_5Reasoning._resize(image, max_dim=896)
+
+        # Costruisce il messaggio nel formato atteso da InternVLAdapter
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text",  "text": f"{question} Answer ONLY 'Yes' or 'No'."}
+                ]
+            }
+        ]
+
+        # Passa attraverso adapter → model_interface.chat()
+        formatted = reasoner.adapter.format_messages(msgs)
         output = reasoner.model_interface.chat(formatted)
 
         response = output.get("sequences", "").strip()
-        is_present = response.lower().strip().startswith("yes")
+        logits = output.get("logits", None)
 
-        return {"is_present": is_present, "raw_response": response[:100]}
+        # Confidence dal ConfidenceCalculator se logits disponibili,
+        # altrimenti fallback lessicale
+        if logits is not None:
+            confidence = reasoner.conf_calculator.from_logits(logits)
+        else:
+            confidence = reasoner.conf_calculator.from_text(response)
+
+        response_lower = response.lower()
+        is_present = any(
+            word in response_lower[:30]
+            for word in ["yes", "correct", "present", "sì", "si"]
+        )
+
+        return {
+            "answer": "yes" if is_present else "no",
+            "is_present": is_present,
+            "confidence": float(confidence),
+            "raw_response": response[:100]
+        }
 
     def _evaluate_tifa(
         self,
@@ -249,15 +315,13 @@ class FinalJudge:
 
                 if result["is_present"]:
                     present.append(attr)
-                    print(f"      ✅ {attr}")
+                    print(f"      ✅ {attr}  (conf: {result['confidence']:.2f})")
                 else:
                     missing.append(attr)
-                    print(f"      ❌ {attr}: {result['raw_response'][:50]}")
+                    print(f"      ❌ {attr}: {result['raw_response'][:50]}...")
 
             except Exception as e:
-                import traceback
-                print(f"      ⚠️  Error on {attr}: {e!r}")
-                traceback.print_exc()
+                print(f"      ⚠️  Error on {attr}: {e}")
                 missing.append(attr)
                 responses[attr] = {"error": str(e)}
 
@@ -292,7 +356,7 @@ class FinalJudge:
         print(f"\n⚖️  [JUDGE] Final Evaluation")
         print(f"{'─'*50}")
 
-        result = JudgeResult()
+        result = JudgeResult(threshold_used=self.threshold)
 
         # === CLIP Metrics ===
         if self.use_clip:
@@ -317,18 +381,77 @@ class FinalJudge:
         # === VQA/TIFA Metrics ===
         if self.use_vqa:
             print("   📊 Computing VQA/TIFA metrics (InternVL3_5-8B)...")
-            tifa, present, missing, _ = self._evaluate_tifa(generated_image, fingerprints)
+            tifa, present, missing, responses = self._evaluate_tifa(generated_image, fingerprints)
             result.tifa_score = tifa
             result.attributes_present = present
             result.attributes_missing = missing
+            result.vqa_responses = responses
             print(f"      TIFA Score: {tifa:.1%} ({len(present)}/{len(present)+len(missing)})")
+
+        # === Aggregate Final Score ===
+        metrics_result = MetricsResult(
+            clip_i=result.clip_i,
+            clip_t=result.clip_t,
+            dino_i=result.dino_i,
+            tifa_score=result.tifa_score
+        )
+        result.final_score = self.metrics_calc.compute_final_score(metrics_result)
+
+        result.metrics_breakdown = {
+            "clip_i": result.clip_i,
+            "clip_t": result.clip_t,
+            "dino_i": result.dino_i,
+            "tifa": result.tifa_score,
+            "weighted_final": result.final_score
+        }
+
+        result.passed = result.final_score >= self.threshold
 
         # === Summary ===
         print(f"\n{'─'*50}")
-        print(f"   CLIP-I: {result.clip_i:.3f}  |  "
-              f"DINO-I: {result.dino_i:.3f}  |  "
-              f"TIFA: {result.tifa_score:.1%}")
+        print(f"   🏆 FINAL SCORE: {result.final_score:.1%}")
+        print(f"   {'✅ PASSED' if result.passed else '❌ FAILED'} (threshold: {self.threshold:.0%})")
         print(f"{'─'*50}")
+
+        # ========================================================================
+        # AGGIUNTA: SALVATAGGIO IN ROOT/metrics/metrics.json
+        # ========================================================================
+        try:
+            metrics_dir = os.path.join(PROJECT_ROOT, "metrics")
+            os.makedirs(metrics_dir, exist_ok=True)
+            metrics_path = os.path.join(metrics_dir, "metrics.json")
+
+            # Estrazione path come stringa se possibile, altrimenti stringa generica per le chiavi del JSON
+            img_key = generated_image if isinstance(generated_image, str) else "PIL_Image"
+            ref_key = reference_image if isinstance(reference_image, str) else "PIL_Image"
+
+            new_entry = {
+                "generated_image": img_key,
+                "reference_image": ref_key,
+                "prompt": prompt,
+                "evaluation": result.to_dict()
+            }
+
+            # Carica il JSON esistente (se presente) per fare un append list-based
+            if os.path.exists(metrics_path):
+                with open(metrics_path, "r", encoding="utf-8") as f:
+                    try:
+                        data = json.load(f)
+                        if not isinstance(data, list):
+                            data = [data]  # fallback di sicurezza se il JSON fosse formattato diversamente
+                    except json.JSONDecodeError:
+                        data = []
+            else:
+                data = []
+
+            data.append(new_entry)
+
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+
+            print(f"   💾 Metrics saved successfully to: metrics/metrics.json")
+        except Exception as e:
+            print(f"   ⚠️ Warning: failed to save metrics to JSON: {e}")
 
         return result
 
@@ -359,7 +482,6 @@ class FinalJudge:
         if self._reasoner is not None:
             self._reasoner.cleanup()
             self._reasoner = None
-            self._reasoner_cls = None
 
         if self._metrics_calc is not None:
             self._metrics_calc.cleanup()

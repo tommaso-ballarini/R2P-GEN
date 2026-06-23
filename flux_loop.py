@@ -20,7 +20,7 @@ from pipeline.verify import verify_generation_r2p, _extract_attributes_for_clip
 from pipeline.judge import FinalJudge
 from pipeline.r2p_tools import ClipScoreCalculator
 from pipeline.utils2 import cleanup_gpu, ensure_output_dir
-from r2p_core.models.qwen3_vl_reasoning import Qwen3VLReasoning  # Step 1 output
+from r2p_core.models.qwen3_vl_reasoning import Qwen3VLReasoning
 from config import Config
 import openai
 from pipeline.refine import qwen3_rewrite_prompt, generate_recovery_http, _generate_batch_http
@@ -28,27 +28,19 @@ from pipeline.prompts.flux_prompts import build_flux_prompt
 
 
 # ---------------------------------------------------------------------------
-# Helper
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _get_first_image(content: dict) -> str | None:
-    """
-    Restituisce la representative_image se presente,
-    altrimenti il primo elemento di top_k_images,
-    altrimenti il primo di image/selected_images.
-    """
     if content.get("representative_image"):
         return content["representative_image"]
-    
     top_k = content.get("top_k_images")
     if top_k:
         return top_k[0]
-
     value = content.get("image") or content.get("selected_images")
     if isinstance(value, list):
         return value[0] if value else None
     return value
-
 
 
 def _get_best_reference_for_recovery(
@@ -56,19 +48,12 @@ def _get_best_reference_for_recovery(
     missing_details: list,
     clip_calculator,
 ) -> str:
-    """
-    Tra le top_k_images, seleziona quella con CLIP score più alto
-    rispetto agli attributi mancanti. Fallback su representative_image.
-    """
     from PIL import Image
-
     candidates = content.get("top_k_images") or []
     if not candidates:
         return _get_first_image(content)
-
     if not missing_details:
         return candidates[0]
-
     best_path, best_score = candidates[0], -1.0
     for path in candidates:
         if not os.path.exists(path):
@@ -81,19 +66,88 @@ def _get_best_reference_for_recovery(
                 best_path = path
         except Exception:
             continue
-
     return best_path
 
 
 def _build_reasoner() -> Qwen3VLReasoning:
-    """Istanzia Qwen3VLReasoning con i parametri da Config."""
     return Qwen3VLReasoning(
-        model_path=Config.Models.QWEN3_MODEL,  # ← Qwen3-VL path
+        model_path=Config.Models.QWEN3_MODEL,
         device="cuda",
-        torch_dtype=torch.bfloat16,            # Qwen3-VL è addestrato in bfloat16, non float16
-        attn_implementation="flash_attention_2", # Qwen3 supporta FA2, più efficiente di sdpa
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
         seed=Config.Generate.SEED,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt log helpers
+# ---------------------------------------------------------------------------
+
+def _build_attempt_log_entry(
+    attempt: int,
+    prompt_used: str,
+    verification: dict,
+    image_path: str,
+) -> dict:
+    """
+    Builds a detailed per-attempt log entry mirroring the diagnostic
+    precision of verify output: per-attribute VLM and CLIP scores,
+    not just averages.
+    """
+    # Per-attribute VLM scores (Phase 1 single_check entries)
+    vlm_per_attribute = {}
+    for item in verification.get("vlm_history", []):
+        if item.get("phase") == "single_check":
+            vlm_per_attribute[item["attribute"]] = {
+                "score":    item["score"],
+                "yes_conf": item["yes_conf"],
+                "no_conf":  item["no_conf"],
+                "response": item.get("response", ""),
+            }
+
+    # Per-attribute CLIP scores (gen vs ref delta)
+    clip_gen = verification.get("clip_details", {}).get("gen", {})
+    clip_ref = verification.get("clip_details", {}).get("ref", {})
+    all_attrs = set(list(clip_gen.keys()) + list(clip_ref.keys()))
+    clip_per_attribute = {
+        attr: {
+            "gen_score": clip_gen.get(attr, 0.0),
+            "ref_score": clip_ref.get(attr, 0.0),
+            "delta":     clip_gen.get(attr, 0.0) - clip_ref.get(attr, 0.0),
+        }
+        for attr in all_attrs
+    }
+
+    return {
+        "attempt":            attempt,
+        "prompt_used":        prompt_used,
+        "score":              verification.get("score", 0.0),
+        "method":             verification.get("method", ""),
+        "success":            verification["is_verified"],
+        "missing_attributes": verification.get("failed_attributes", []),
+        "image_path":         image_path,
+        "vlm_per_attribute":  vlm_per_attribute,
+        "clip_per_attribute": clip_per_attribute,
+    }
+
+
+def _build_failed_generation_log_entry(
+    attempt: int,
+    prompt_used: str,
+    current_missing: list,
+) -> dict:
+    """Log entry for a batch item where FLUX generation itself failed."""
+    return {
+        "attempt":            attempt,
+        "prompt_used":        prompt_used,
+        "score":              None,
+        "method":             "flux_generation_failed",
+        "success":            False,
+        "missing_attributes": current_missing,
+        "image_path":         None,
+        "vlm_per_attribute":  {},
+        "clip_per_attribute": {},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +160,6 @@ def stage_generate_only(
     num_shards: int = 1,
     shard_index: int = 0,
 ) -> dict:
-    """Fase 1: Estrazione + FLUX Img2Img (con sharding opzionale)."""
     print(f"\n{'='*70}\n🚀 STAGE: GENERATE ONLY "
           f"[shard {shard_index}/{num_shards}]\n{'='*70}")
     ensure_output_dir(output_dir)
@@ -114,8 +167,8 @@ def stage_generate_only(
     generator = Generator(
         database_path=database_path,
         output_dir=output_dir,
-        num_shards=num_shards,      # Generator deve accettare questi kwargs;
-        shard_index=shard_index,    # se non li accetta ancora, aggiungili lì.
+        num_shards=num_shards,
+        shard_index=shard_index,
     )
     stats = generator.generate_all()
     generator.cleanup()
@@ -130,7 +183,6 @@ def stage_generate_only(
 # ---------------------------------------------------------------------------
 
 def stage_verify_base(database_path: str, output_dir: str) -> str:
-    """Fase 2: Verifica con Qwen3-VL + CLIP. Salva rejected_concepts.json."""
     print(f"\n{'='*70}\n📍 STAGE: VERIFY BASE (Qwen3-VL)\n{'='*70}")
 
     with open(database_path, "r", encoding="utf-8") as f:
@@ -174,10 +226,10 @@ def stage_verify_base(database_path: str, output_dir: str) -> str:
         else:
             print(f"   ❌ {concept_id}: FAIL ({verification['score']:.2f})")
             rejected_dict[concept_id] = {
-                "score": verification["score"],
-                "error_type": "attribute",
+                "score":           verification["score"],
+                "error_type":      "attribute",
                 "missing_details": verification.get("failed_attributes", []),
-                "details": verification,
+                "details":         verification,
             }
 
     del reasoner
@@ -195,7 +247,7 @@ def stage_verify_base(database_path: str, output_dir: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 — Refine (versione batch)
+# Stage 3 — Refine (batch mode)
 # ---------------------------------------------------------------------------
 
 def stage_refine(
@@ -203,7 +255,7 @@ def stage_refine(
     rejected_path: str,
     output_dir: str,
 ) -> None:
-    """Fase 3: Refine tramite API (closed-loop ospedaliero) in batch su FLUX."""
+    """Fase 3: Refine tramite API (closed-loop) in batch su FLUX."""
     print(f"\n{'='*70}\n🚑 STAGE: RECOVERY (BATCH MODE)\n{'='*70}")
 
     if not os.path.exists(rejected_path):
@@ -211,7 +263,7 @@ def stage_refine(
         return
 
     if os.path.getsize(rejected_path) == 0:
-        print("   ❌ rejected_concepts.json esiste ma è vuoto (file corrotto?). Abort.")
+        print("   ❌ rejected_concepts.json esiste ma è vuoto. Abort.")
         return
 
     with open(rejected_path, "r", encoding="utf-8") as f:
@@ -235,8 +287,8 @@ def stage_refine(
 
     print(f"   Trovati {len(rejected_dict)} concetti da curare.")
 
-    FLUX_URL       = getattr(Config.Models, "RECOVERY_FLUX_URL", "http://127.0.0.1:8766")
-    MAX_ATTEMPTS   = Config.Refine.MAX_ITERATIONS
+    FLUX_URL     = getattr(Config.Models, "RECOVERY_FLUX_URL", "http://127.0.0.1:8766")
+    MAX_ATTEMPTS = Config.Refine.MAX_ITERATIONS
 
     print("   Caricamento Qwen3-VL e CLIP in VRAM (GPU 0) per il loop di recovery...")
     reasoner = _build_reasoner()
@@ -246,9 +298,9 @@ def stage_refine(
     graveyard_count = 0
     recovery_report = {}
 
-    # --------------------------------------------------------------------
-    # 1. Inizializza lo stato per ogni concept
-    # --------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # 1. Inizializza stato per ogni concept
+    # -----------------------------------------------------------------------
     concept_states = {}
     for concept_id, fail_data in rejected_dict.items():
         content = concept_dict.get(concept_id, {})
@@ -257,43 +309,47 @@ def stage_refine(
         if source_image_path is None:
             print(f"      ⚠️  Nessuna immagine sorgente per {concept_id} → graveyard.")
             recovery_report[concept_id] = {
-                "status": "unrecoverable",
-                "attempts": 0,
-                "final_score": fail_data.get("score", 0.0),
+                "status":               "unrecoverable",
+                "attempts":             0,
+                "final_score":          fail_data.get("score", 0.0),
                 "last_missing_details": fail_data.get("missing_details", []),
                 "original_fail_reason": fail_data.get("missing_details", []),
                 "recovered_image_path": None,
-                "original_prompt": None,
+                "original_prompt":      None,
                 "last_rewritten_prompt": None,
-                "reason": "No source image",
-                "attempts_log": [],
+                "reason":               "No source image",
+                "attempts_log":         [],
             }
             graveyard_count += 1
             continue
 
-        fingerprints   = content.get("info", {})
-        target_context = Config.get_background_template()
-        current_prompt = build_flux_prompt(fingerprints, target_context)
+        fingerprints    = content.get("info", {})
+        target_context  = Config.get_background_template()
+        current_prompt  = build_flux_prompt(fingerprints, target_context)
         missing_details = fail_data.get("missing_details", [])
 
         concept_states[concept_id] = {
-            "content": content,
-            "fingerprints": fingerprints,
-            "current_prompt": current_prompt,
-            "missing_details": missing_details,
-            "is_fixed": False,
-            "verification": None,
-            "gen_image_path": os.path.join(output_dir, f"{concept_id}_generated.png"),
-            "original_prompt": current_prompt,
+            "content":               content,
+            "fingerprints":          fingerprints,
+            "current_prompt":        current_prompt,
+            "missing_details":       missing_details,
+            "is_fixed":              False,
+            "verification":          None,
+            # _generated.png at the start of recovery is the original failed image.
+            # It stays _generated.png until a recovery attempt succeeds, at which
+            # point it gets renamed to _generated_rejected_attempt0.png and the
+            # successful attempt overwrites _generated.png.
+            "gen_image_path":        os.path.join(output_dir, f"{concept_id}_generated.png"),
+            "original_prompt":       current_prompt,
             "last_rewritten_prompt": None,
-            "attempts_history": [],
-            "attempts_log": [],
-            "original_fail_reason": fail_data.get("missing_details", []),
+            "attempts_history":      [],
+            "attempts_log":          [],
+            "original_fail_reason":  fail_data.get("missing_details", []),
         }
 
-    # --------------------------------------------------------------------
-    # 2. Loop per tentativo – batch su tutti i concept attivi
-    # --------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # 2. Loop per tentativo — batch su tutti i concept attivi
+    # -----------------------------------------------------------------------
     for attempt in range(1, MAX_ATTEMPTS + 1):
         active = {cid: s for cid, s in concept_states.items() if not s["is_fixed"]}
         if not active:
@@ -303,8 +359,11 @@ def stage_refine(
         print(f"   🔄 TENTATIVO {attempt}/{MAX_ATTEMPTS} — {len(active)} concept attivi")
         print(f"   {'='*50}")
 
-        # ---- 2a. Rewrite prompt per tutti (sequenziale su Qwen3) ----
-        prompts_batch, seeds_batch, paths_batch, cids_batch, sources_batch = [], [], [], [], []
+        prompts_batch  = []
+        seeds_batch    = []
+        paths_batch    = []
+        cids_batch     = []
+        sources_batch  = []
 
         for concept_id, state in active.items():
             missing_details_before = list(state["missing_details"])
@@ -313,20 +372,31 @@ def stage_refine(
                 state["content"], state["missing_details"], clip_calculator
             )
 
+            # For attempt 1: failed_image_path = _generated.png (original failed)
+            # For attempt N>1: failed_image_path = _generated_attemptN-1.png
+            failed_image_path = (
+                state["gen_image_path"]
+                if attempt == 1
+                else (state["attempts_log"][-1].get("image_path") if state["attempts_log"] else None)
+            )
+
             new_prompt = qwen3_rewrite_prompt(
                 reasoner=reasoner,
                 original_prompt=state["current_prompt"],
                 missing_details=state["missing_details"],
                 attempt=attempt,
-                failed_image_path=state["attempts_log"][-1].get("image_path") if state["attempts_log"] else None,
+                failed_image_path=failed_image_path,
                 attempts_history=state["attempts_history"],
+                fingerprints=state["fingerprints"],   # ← classification by key
             )
             print(f"      [{concept_id}] 📝 {new_prompt[:70]}...")
 
             attempt_image_path = os.path.join(
                 output_dir, f"{concept_id}_generated_attempt{attempt}.png"
             )
-            new_seed = Config.Generate.SEED + attempt
+
+            # Seed distanziato per evitare correlazione tra tentativi
+            new_seed = Config.Generate.SEED + attempt * 1000
 
             prompts_batch.append(new_prompt)
             seeds_batch.append(new_seed)
@@ -334,12 +404,11 @@ def stage_refine(
             cids_batch.append(concept_id)
             sources_batch.append(best_source)
 
-            # Salva nel contesto per dopo
-            state["last_rewritten_prompt"] = new_prompt
+            state["last_rewritten_prompt"]   = new_prompt
             state["_missing_details_before"] = missing_details_before
-            state["_best_source"] = best_source
+            state["_best_source"]            = best_source
 
-        # ---- 2b. Batch FLUX (una chiamata HTTP per tutti) ----
+        # ---- Batch FLUX ----
         print(f"\n      🚀 Invio batch FLUX: {len(prompts_batch)} immagini...")
         batch_results = _generate_batch_http(
             flux_url=FLUX_URL,
@@ -349,25 +418,23 @@ def stage_refine(
             output_paths=paths_batch,
         )
 
-        # ---- 2c. Verifica per ogni concept (sequenziale) ----
+        # ---- Verifica per ogni concept ----
         for i, concept_id in enumerate(cids_batch):
-            state = concept_states[concept_id]
-            attempt_image_path = paths_batch[i]
-            success = batch_results[i]
-            new_prompt = state["last_rewritten_prompt"]
+            state                  = concept_states[concept_id]
+            attempt_image_path     = paths_batch[i]
+            success                = batch_results[i]
+            new_prompt             = state["last_rewritten_prompt"]
             missing_details_before = state["_missing_details_before"]
 
             if not success:
                 print(f"      [{concept_id}] ⚠️ Generazione FLUX fallita.")
-                state["attempts_log"].append({
-                    "attempt": attempt,
-                    "prompt_used": new_prompt,
-                    "clip_score": None,
-                    "vlm_avg": None,
-                    "missing_attributes": state["missing_details"],
-                    "success": False,
-                    "image_path": None,
-                })
+                state["attempts_log"].append(
+                    _build_failed_generation_log_entry(
+                        attempt=attempt,
+                        prompt_used=new_prompt,
+                        current_missing=state["missing_details"],
+                    )
+                )
                 continue
 
             verification = verify_generation_r2p(
@@ -378,27 +445,22 @@ def stage_refine(
                 fingerprints=state["fingerprints"],
             )
 
-            # Estrai punteggi aggregati
-            clip_scores_list = list(verification["clip_details"]["gen"].values()) if "clip_details" in verification else []
-            clip_score = float(np.mean(clip_scores_list)) if clip_scores_list else None
-            vlm_scores = [item["score"] for item in verification.get("vlm_history", []) if item.get("phase") == "single_check"]
-            vlm_avg = float(np.mean(vlm_scores)) if vlm_scores else None
-
-            state["attempts_log"].append({
-                "attempt": attempt,
-                "prompt_used": new_prompt,
-                "clip_score": clip_score,
-                "vlm_avg": vlm_avg,
-                "missing_attributes": verification.get("failed_attributes", state["missing_details"]),
-                "success": verification["is_verified"],
-                "image_path": attempt_image_path,
-            })
+            # Per-attribute detailed log entry
+            state["attempts_log"].append(
+                _build_attempt_log_entry(
+                    attempt=attempt,
+                    prompt_used=new_prompt,
+                    verification=verification,
+                    image_path=attempt_image_path,
+                )
+            )
 
             state["attempts_history"].append({
-                "attempt": attempt,
+                "attempt":      attempt,
                 "missing_before": missing_details_before,
-                "missing_after": verification.get("failed_attributes", state["missing_details"]),
-                "improved": len(verification.get("failed_attributes", state["missing_details"])) < len(missing_details_before),
+                "missing_after":  verification.get("failed_attributes", state["missing_details"]),
+                "improved":       len(verification.get("failed_attributes", state["missing_details"]))
+                                  < len(missing_details_before),
             })
 
             state["verification"] = verification
@@ -406,11 +468,13 @@ def stage_refine(
             if verification["is_verified"]:
                 print(f"      [{concept_id}] ✅ GUARITO al tentativo {attempt}!")
                 import shutil
-                # Rinomina la precedente _generated.png come rejected prima di sovrascriverla
+
+                # Rename the previous _generated.png to _generated_rejected_attempt0.png
+                # (attempt 1 success → rejected = attempt0 = original generated image)
                 previous_attempt_num = attempt - 1
                 rejected_name = os.path.join(
                     output_dir,
-                    f"{concept_id}_generated_rejected_attempt{previous_attempt_num}.png"
+                    f"{concept_id}_generated_rejected_attempt{previous_attempt_num}.png",
                 )
                 if os.path.exists(state["gen_image_path"]):
                     os.rename(state["gen_image_path"], rejected_name)
@@ -419,64 +483,63 @@ def stage_refine(
                 shutil.copy2(attempt_image_path, state["gen_image_path"])
                 state["is_fixed"] = True
                 recovered_count += 1
+
             else:
-                state["missing_details"] = verification.get("failed_attributes", state["missing_details"])
-                MAX_ATTR_LENGTH = 80  # attributi più lunghi sono quasi certamente allucinazioni narrative
-                state["missing_details"] = [
-                    a for a in state["missing_details"]
-                    if len(a) <= MAX_ATTR_LENGTH
-                ]
-                # Se il filtro ha eliminato tutto, torna ai missing originali troncati
-                if not state["missing_details"]:
-                    state["missing_details"] = [
+                new_missing = verification.get("failed_attributes", state["missing_details"])
+
+                # Filter out hallucinated long strings
+                MAX_ATTR_LENGTH = 80
+                new_missing = [a for a in new_missing if len(a) <= MAX_ATTR_LENGTH]
+                if not new_missing:
+                    new_missing = [
                         a for a in state["original_fail_reason"]
                         if len(a) <= MAX_ATTR_LENGTH
                     ][:3]
-                state["current_prompt"] = new_prompt
+
+                state["missing_details"] = new_missing
+                state["current_prompt"]  = new_prompt
                 print(f"      [{concept_id}] ❌ Permangono: {state['missing_details']}")
 
-    # --------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # 3. Compilazione report finale
-    # --------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     for concept_id, state in concept_states.items():
-        is_fixed = state["is_fixed"]
+        is_fixed     = state["is_fixed"]
         verification = state["verification"]
 
         if is_fixed:
-            # Trova il tentativo in cui è guarito
             attempt_success = None
             for log in reversed(state["attempts_log"]):
                 if log.get("success"):
                     attempt_success = log["attempt"]
                     break
             recovery_report[concept_id] = {
-                "status": "recovered",
-                "attempts": attempt_success or 0,
-                "final_score": verification.get("score", 0.0) if verification else 0.0,
+                "status":               "recovered",
+                "attempts":             attempt_success or 0,
+                "final_score":          verification.get("score", 0.0) if verification else 0.0,
                 "last_missing_details": [],
                 "recovered_image_path": state["gen_image_path"],
-                "original_prompt": state["original_prompt"],
+                "original_prompt":      state["original_prompt"],
                 "last_rewritten_prompt": state["last_rewritten_prompt"],
                 "original_fail_reason": state["original_fail_reason"],
-                "reason": "",
-                "attempts_log": state["attempts_log"],
+                "reason":               "",
+                "attempts_log":         state["attempts_log"],
             }
         else:
             graveyard_count += 1
             recovery_report[concept_id] = {
-                "status": "unrecoverable",
-                "attempts": MAX_ATTEMPTS,
-                "final_score": verification.get("score", 0.0) if verification else 0.0,
+                "status":               "unrecoverable",
+                "attempts":             MAX_ATTEMPTS,
+                "final_score":          verification.get("score", 0.0) if verification else 0.0,
                 "last_missing_details": state["missing_details"],
                 "recovered_image_path": None,
-                "original_prompt": state["original_prompt"],
+                "original_prompt":      state["original_prompt"],
                 "last_rewritten_prompt": state["last_rewritten_prompt"],
                 "original_fail_reason": state["original_fail_reason"],
-                "reason": "Max attempts reached",
-                "attempts_log": state["attempts_log"],
+                "reason":               "Max attempts reached",
+                "attempts_log":         state["attempts_log"],
             }
 
-    # Salva report
     report_path = os.path.join(output_dir, "recovery_results.json")
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(recovery_report, f, indent=4)
@@ -487,19 +550,18 @@ def stage_refine(
     del clip_calculator
     cleanup_gpu()
 
+
 # ---------------------------------------------------------------------------
 # Stage 4 — Final Judge
 # ---------------------------------------------------------------------------
 
 def stage_final_judge(database_path: str, output_dir: str) -> None:
-    """Fase 4: Giudizio finale indipendente (InternVL2)."""
     print(f"\n{'='*70}\n⚖️  STAGE: FINAL JUDGE\n{'='*70}")
 
     with open(database_path, "r", encoding="utf-8") as f:
         database = json.load(f)
 
     judge = FinalJudge(
-        threshold=Config.Refine.TARGET_ACCURACY,
         use_dino=True,
         use_clip=True,
         use_vqa=True,
@@ -529,10 +591,10 @@ def stage_final_judge(database_path: str, output_dir: str) -> None:
                        fingerprints.get("sdxl_prompt", "")),
             )
             results[concept_id] = judge_eval.to_dict()
-            status = "✅" if judge_eval.passed else "❌"
-            print(f"   {status} {concept_id} | "
-                  f"TIFA: {judge_eval.tifa_score:.1%} | "
-                  f"DINO: {judge_eval.dino_i:.3f}")
+            print(f"   ✅ {concept_id} | "
+                f"CLIP-I: {judge_eval.clip_i:.3f} | "
+                f"DINO-I: {judge_eval.dino_i:.3f} | "
+                f"TIFA: {judge_eval.tifa_score:.1%}")
         except Exception as e:
             print(f"   ⚠️ Errore su {concept_id}: {e}")
 
@@ -542,6 +604,7 @@ def stage_final_judge(database_path: str, output_dir: str) -> None:
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=4)
     print(f"\n📁 Risultati finali → {results_path}")
+
 
 # ---------------------------------------------------------------------------
 # Main entry point

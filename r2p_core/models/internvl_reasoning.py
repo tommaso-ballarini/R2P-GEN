@@ -21,7 +21,7 @@ from torchvision.transforms.functional import InterpolationMode
 
 from r2p_core.models.model_interface import ModelInterface
 from r2p_core.models.model_adapters import InternVLAdapter
-from r2p_core.models.confidence_calculator import ConfidenceCalculator
+from r2p_core.evaluators.compute_confidence import ConfidenceCalculator
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +30,9 @@ from r2p_core.models.confidence_calculator import ConfidenceCalculator
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD  = (0.229, 0.224, 0.225)
+IMG_CONTEXT_TOKEN = '<IMG_CONTEXT>'
+IMG_START_TOKEN = '<img>'
+IMG_END_TOKEN = '</img>'
 
 INTERNVL3_5_8B_PATH = (
     "/leonardo_work/IscrC_MUSE/tballari/models_cache/"
@@ -171,6 +174,9 @@ class InternVL3_5Model(ModelInterface):
             device_map="auto",
         ).eval()
 
+        img_context_token_id = self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
+        self.model.img_context_token_id = img_context_token_id
+
         # Esposto per compatibilità con codice che legge .processor
         self.processor = self.tokenizer
         self.image_processor = None
@@ -187,10 +193,10 @@ class InternVL3_5Model(ModelInterface):
 
         Args:
             msgs: Lista messaggi in formato InternVLAdapter, es.:
-                  [{"role": "user", "content": [
-                      {"type": "image", "image": <PIL.Image>},
-                      {"type": "text",  "text": "<image>\\nDomanda?"}
-                  ]}]
+                [{"role": "user", "content": [
+                    {"type": "image", "image": <PIL.Image>},
+                    {"type": "text",  "text": "<image>\\nDomanda?"}
+                ]}]
 
         Returns:
             {"sequences": str, "logits": torch.Tensor | None}
@@ -207,18 +213,44 @@ class InternVL3_5Model(ModelInterface):
                     img = Image.open(img).convert("RGB")
                 images_pil.append(img)
             elif item["type"] == "text":
-                # Rimuovi eventuali <image>\n già presenti nel testo
-                # (InternVLAdapter li aggiunge, ma li riscriviamo noi)
                 clean = item["text"].replace("<image>\n", "").strip()
                 text_parts.append(clean)
 
         prompt_text = " ".join(text_parts)
 
-        # --- Costruisci il prompt con i <image> token nella posizione corretta ---
-        # InternVL2 si aspetta: "<image>\n" * num_images + domanda
-        num_images = len(images_pil)
-        image_tokens = "<image>\n" * num_images
-        full_prompt = image_tokens + prompt_text
+        # --- Prepara pixel_values PRIMA del prompt: il numero di token
+        # <IMG_CONTEXT> nel prompt deve combaciare esattamente col numero di
+        # tile prodotti per ciascuna immagine. ---
+        pixel_values_list = []
+        num_patches_list = []
+
+        model_device = next(self.model.parameters()).device
+        model_dtype = next(self.model.parameters()).dtype
+
+        for img_pil in images_pil:
+            pv = _load_image_tensor(img_pil, device=model_device, dtype=model_dtype)
+            pixel_values_list.append(pv)
+            num_patches_list.append(pv.shape[0])
+
+        pixel_values = (
+            torch.cat(pixel_values_list, dim=0) if pixel_values_list else None
+        )
+
+        # --- Costruisci il prompt con i blocchi <img><IMG_CONTEXT>...</img> ---
+        num_image_token = getattr(self.model, "num_image_token", 256)
+        image_blocks = "".join(
+            IMG_START_TOKEN + IMG_CONTEXT_TOKEN * (n * num_image_token) + IMG_END_TOKEN + "\n"
+            for n in num_patches_list
+        )
+        system_msg = (
+            "你是书生·万象，英文名是InternVL，是由上海人工智能实验室、"
+            "清华大学及多家合作单位联合开发的多模态大语言模型。"
+        )
+        full_prompt = (
+            f"<|im_start|>system\n{system_msg}<|im_end|>\n"
+            f"<|im_start|>user\n{image_blocks}{prompt_text}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
 
         # --- Tokenizza ---
         model_inputs = self.tokenizer(
@@ -228,32 +260,6 @@ class InternVL3_5Model(ModelInterface):
         )
         input_ids = model_inputs.input_ids.to(self.device)
         attention_mask = model_inputs.attention_mask.to(self.device)
-
-        # --- Prepara pixel_values ---
-        # InternVL2 vuole un unico tensore concatenato di tutti i tile
-        # di tutte le immagini, più num_patches_list per sapere quanti
-        # tile appartengono a ciascuna immagine.
-        pixel_values_list = []
-        num_patches_list = []
-
-        # Determina il device reale del modello (potrebbe essere su più GPU)
-        model_device = next(self.model.parameters()).device
-        model_dtype = next(self.model.parameters()).dtype
-
-        for img_pil in images_pil:
-            pv = _load_image_tensor(
-                img_pil,
-                device=model_device,
-                dtype=model_dtype,
-            )
-            pixel_values_list.append(pv)
-            num_patches_list.append(pv.shape[0])
-
-        pixel_values = (
-            torch.cat(pixel_values_list, dim=0)
-            if pixel_values_list
-            else None
-        )
 
         # --- Generazione ---
         generation_config = {
@@ -268,21 +274,25 @@ class InternVL3_5Model(ModelInterface):
                 pixel_values=pixel_values,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                num_patches_list=num_patches_list if num_images > 0 else None,
                 **generation_config,
             )
 
-        # --- Decodifica (solo token nuovi) ---
-        prompt_len = input_ids.shape[1]
-        generated_ids = output.sequences[:, prompt_len:]
+        # --- Decodifica ---
+        # generate() passa inputs_embeds (non input_ids) al language model
+        # interno (vedi modeling_internvl_chat.py) -> output.sequences contiene
+        # GIA' solo i token generati, nessuno slicing va fatto (lo conferma
+        # anche il chat() ufficiale, che decodifica senza tagliare nulla).
         decoded = self.tokenizer.decode(
-            generated_ids[0],
+            output.sequences[0],
             skip_special_tokens=True,
         ).strip()
 
         last_logits = output.scores[-1][0] if output.scores else None
-
-        return {"sequences": decoded, "logits": last_logits}
+        return {
+                "sequences": decoded,
+                "raw_token_ids": output.sequences,
+                "scores": output.scores,
+            }
 
 
 # ---------------------------------------------------------------------------

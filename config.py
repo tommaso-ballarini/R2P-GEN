@@ -122,6 +122,8 @@ class Config:
             "clip-vit-large-patch14-336/snapshots/ce19dc912ca5cd21c8a653c79e251e808ccabcd1"
         )
 
+        DINO_MODEL = "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface/dinov2-large"
+
     # ========================================================================
     # GPU CONFIGURATION
     # ========================================================================

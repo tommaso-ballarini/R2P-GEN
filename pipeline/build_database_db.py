@@ -1,17 +1,7 @@
 """
-pipeline/build_database.py
+pipeline/build_database_db.py
 
-Builds the fingerprints database for the R2P-GEN pipeline (FLUX Edition).
-Uses CLIP's Text Encoder to force selection of the image that clearly
-shows structural details, readable text and logos, avoiding representation
-smoothing of centroids.
 
-Workflow:
-    1. Discover all concepts in perva-data (train/category/concept_id/)
-    2. Select the TOP-3 representative images via Text-Image Cosine Similarity
-    3. Extract fingerprints with Qwen3-VL (structured JSON) from the TOP-1
-    4. Save database.json containing concept_dict + path_to_concept (including
-         backups for recovery)
 
 """
 
@@ -47,7 +37,11 @@ PERVA_DATA_DIR = os.environ.get("R2P_PERVA_DATA", _DEFAULT_PERVA)
 
 _ONESHOT_IMAGE_PATH = os.path.join(project_root, "example_database", "wnr.jpg")
 
-_ANSWER_FORMAT = {
+# ---------------------------------------------------------------------------
+# NEW: Bifurcated Schemas for DreamBench (Living vs Inanimate)
+# ---------------------------------------------------------------------------
+
+_JSON_SCHEMA_OBJECT = {
     "general":          "a brief description of the object in one sentence.",
     "category":         "category of the object",
     "shape":            "shape of the object",
@@ -55,66 +49,67 @@ _ANSWER_FORMAT = {
     "color":            "color of the object",
     "pattern":          "any distinct pattern if present, else 'none'",
     "brand/text":       "any text or brand visible on the object, else 'none'",
-    "distinct features":"any distinct feature that makes the object unique",
+    "distinct features":"any distinct feature that makes the object unique"
 }
 
-_ONESHOT_ANSWER = json.dumps({
-    "general":          "<wnr> is a decorative ceramic plate with an elegant floral design around the rim.",
-    "category":         "Plate",
-    "shape":            "Round with slightly raised edges",
-    "material":         "Ceramic",
-    "color":            "White base with orange and blue flowers and green leaves on the border",
-    "pattern":          "Floral pattern with small, evenly spaced blossoms and foliage",
-    "brand/text":       "none",
-    "distinct features":"Intricate detailing of flower motifs along the edge",
-}, indent=2)
+_JSON_SCHEMA_LIVING = {
+    "general":              "a brief description of the animal in one sentence.",
+    "category":             "category or species (e.g., 'dog', 'cat')",
+    "species_and_breed":    "the species and specific breed (e.g., 'Dog, Shiba Inu' or 'Cat, Tabby')",
+    "coat_and_color":       "length, texture, and primary color of the fur/hair",
+    "facial_features":      "distinctive traits of the face (e.g., eye color, ear shape, snout)",
+    "distinctive_markings": "any unique spots, asymmetric color patches, or scars (e.g., 'white patch on the left paw')",
+    "accessories":          "any collar, tag, harness, or clothing worn by the animal, else 'none'"
+}
 
+def _build_classification_message(image: Image.Image) -> list:
+    """Step 1: Classifica se il soggetto è un essere vivente o un oggetto."""
+    question = (
+        "Look at the main entity in this image. "
+        "Is it a living being (like an animal, dog, cat) or an inanimate object (like a backpack, can, toy)? "
+        "Reply ONLY with the word 'LIVING' or 'OBJECT'."
+    )
+    return [
+        {"role": "user", "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": question}
+        ]}
+    ]
 
 def _build_extraction_messages(
     image: Image.Image,
     category: str,
     concept_id: str,
+    entity_type: str
 ) -> list:
+    """Step 2: Estrae i fingerprint usando lo schema corretto isolando il soggetto."""
+    
+    if entity_type == "LIVING":
+        schema = _JSON_SCHEMA_LIVING
+        entity_desc = "living being (animal)"
+    else:
+        schema = _JSON_SCHEMA_OBJECT
+        entity_desc = "inanimate object"
+
     question_test = (
-        f"Describe the {category} in the image identified by the concept-identifier "
-        f"<{concept_id}> and highlight what makes it unique.\n"
-        f"Your response MUST be valid JSON and follow EXACTLY this format:\n"
-        f"{json.dumps(_ANSWER_FORMAT, indent=2)}\n\n"
-        f"RULES:\n"
-        f'- The "general" field MUST begin with "<{concept_id}> is ...".\n'
-        f"- List only the most distinguishing features that set this object apart.\n"
-        f"- Avoid generic descriptions that apply to every object in this category.\n"
-        f"- Respond ONLY with the JSON object. No extra text, no markdown fences."
+        f"Describe the {entity_desc} ({category}) in the image identified by the concept-identifier <{concept_id}>.\n"
+        f"CRITICAL RULES:\n"
+        f"1. Describe the entity as if it were an isolated 3D model in an empty white room.\n"
+        f"2. DO NOT describe the background, the environment, the lighting, or the camera angle.\n"
+        f"3. DO NOT describe its pose or current action (e.g., ignore if it is sitting, running, or held by someone).\n"
+        f"4. Your response MUST be valid JSON and follow EXACTLY this format:\n"
+        f"{json.dumps(schema, indent=2)}\n\n"
+        f"The 'general' field MUST begin with '<{concept_id}> is ...'.\n"
+        f"Respond ONLY with the JSON object. No extra text, no markdown fences."
     )
 
-    use_oneshot = os.path.exists(_ONESHOT_IMAGE_PATH)
-
-    if use_oneshot:
-        oneshot_img = Image.open(_ONESHOT_IMAGE_PATH).convert("RGB")
-        question_example = (
-            "Describe the plate in the image identified by the concept-identifier "
-            "<wnr> and highlight what makes it unique.\n"
-            f"Your response MUST follow EXACTLY the JSON format shown below:\n"
-            f"{json.dumps(_ANSWER_FORMAT, indent=2)}\n\n"
-            "RULES:\n"
-            '- The "general" field MUST begin with "<wnr> is ...".\n'
-            "- Respond ONLY with the JSON object. No extra text, no markdown fences."
-        )
-        msgs = [
-            {"role": "user",      "content": [{"type": "image", "image": oneshot_img},
-                                               {"type": "text",  "text": question_example}]},
-            {"role": "assistant", "content": _ONESHOT_ANSWER},
-            {"role": "user",      "content": [{"type": "image", "image": image},
-                                               {"type": "text",  "text": question_test}]},
-        ]
-    else:
-        msgs = [
-            {"role": "user", "content": [{"type": "image", "image": image},
-                                          {"type": "text",  "text": question_test}]},
-        ]
-
+    msgs = [
+        {"role": "user", "content": [
+            {"type": "image", "image": image},
+            {"type": "text",  "text": question_test}
+        ]},
+    ]
     return msgs
-
 
 def _parse_json_response(raw: str) -> dict:
     cleaned = raw.strip().strip("```json").strip("```").strip()
@@ -124,7 +119,6 @@ def _parse_json_response(raw: str) -> dict:
     else:
         raise ValueError(f"Nessun JSON trovato nella risposta: {raw[:200]}")
     return json.loads(cleaned)
-
 
 # ---------------------------------------------------------------------------
 # NEW SELECTOR: Semantic CLIP Selector (Text-Driven)
@@ -216,7 +210,6 @@ class DatabaseBuilder:
         ignore_laion: bool = None,
         seed: int = None,
         device: str = None,
-         output_path: str = None,
     ):
         self.perva_data_dir  = perva_data_dir
         self.dataset_split   = dataset_split   or Config.BuildDatabase.DATASET_SPLIT
@@ -228,12 +221,10 @@ class DatabaseBuilder:
         self.device          = device          or Config.GPU.DEVICE
 
         if Config.Database.CANONICAL_NAME:
-            out_name = "database.json"
+            out_name = "database_db.json"
         else:
             out_name = f"database_perva_{self.dataset_split}.json"
-        default_out = os.path.join(Config.Paths.DATABASE_DIR, out_name)
-        self.output_path = output_path if output_path is not None else default_out
-
+        self.output_path = os.path.join(Config.Paths.DATABASE_DIR, out_name)
 
         self._reasoner   = None
         self._clip_sel   = None
@@ -311,13 +302,36 @@ class DatabaseBuilder:
         return concepts
 
     def _extract_fingerprints(self, image, category, concept_id):
-        msgs = _build_extraction_messages(image, category, concept_id)
-        output = self.reasoner.model_interface.chat(msgs)
-        if isinstance(output, tuple):
-            _, raw_text = output
+        # --- STEP 1: Classificazione Binaria ---
+        class_msgs = _build_classification_message(image)
+        class_output = self.reasoner.model_interface.chat(class_msgs)
+        
+        # Gestione output flessibile (tupla o dict)
+        if isinstance(class_output, tuple):
+            _, raw_class = class_output
         else:
-            raw_text = output.get("sequences", "")
-        fingerprints = _parse_json_response(raw_text)
+            raw_class = class_output.get("sequences", "")
+            
+        is_living = "LIVING" in raw_class.upper()
+        entity_type = "LIVING" if is_living else "OBJECT"
+        
+        # print di debug per vedere come sta classificando (opzionale ma utile)
+        # print(f"   ↳ [Qwen3-VL] Classificato <{concept_id}> come: {entity_type}")
+
+        # --- STEP 2: Estrazione JSON ---
+        extract_msgs = _build_extraction_messages(image, category, concept_id, entity_type)
+        extract_output = self.reasoner.model_interface.chat(extract_msgs)
+        
+        if isinstance(extract_output, tuple):
+            _, raw_json = extract_output
+        else:
+            raw_json = extract_output.get("sequences", "")
+            
+        fingerprints = _parse_json_response(raw_json)
+        
+        # Aggiungiamo un flag nel JSON per sapere in futuro che schema ha usato
+        fingerprints["_entity_type"] = entity_type 
+        
         return fingerprints
 
     def _process_concept(self, concept_data: dict) -> tuple[str, dict]:
@@ -429,8 +443,6 @@ if __name__ == "__main__":
                         help="Numero concepts in debug mode")
     parser.add_argument("--no-clip",     action="store_true",
                         help="Disabilita Semantic CLIP selection")
-    parser.add_argument("--output", type=str, default=None,
-                        help="Percorso di output per il database JSON (sovrascrive il default)")
     args = parser.parse_args()
 
     builder = DatabaseBuilder(
@@ -439,6 +451,5 @@ if __name__ == "__main__":
         debug_mode        = args.debug,
         debug_limit       = args.debug_limit,
         use_clip_selection= not args.no_clip,
-        output_path       = args.output,
     )
     builder.build()

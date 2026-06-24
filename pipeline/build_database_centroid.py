@@ -1,28 +1,28 @@
 """
 pipeline/build_dataset.py
 
-Costruisce il database di fingerprints per la pipeline R2P-GEN (FLUX Edition).
+Builds the fingerprints database for the R2P-GEN pipeline (FLUX Edition).
 
 Workflow:
-  1. Scopre tutti i concetti in perva-data (train/categoria/concept_id/)
-  2. Seleziona l'immagine rappresentativa via CLIP centroid
-  3. Estrae i fingerprints con Qwen3-VL (JSON strutturato)
-  4. Salva database.json con concept_dict + path_to_concept
+    1. Discover all concepts in perva-data (train/category/concept_id/)
+    2. Select the representative image via CLIP centroid
+    3. Extract fingerprints with Qwen3-VL (structured JSON)
+    4. Save database.json with concept_dict + path_to_concept
 
-FIX 8: l'immagine rappresentativa selezionata via CLIP centroid viene ora
-salvata esplicitamente in entry["representative_image"], cosi' generate.py
-e flux_loop.py possono usarla invece di ricadere sempre su images[0].
+FIX 8: the representative image selected via the CLIP centroid is now
+saved explicitly in entry["representative_image"], so generate.py
+and flux_loop.py can use it instead of always falling back to images[0].
 
-Il flux_prompt NON viene generato qui: è costruito on-the-fly in flux_loop.py
-tramite build_flux_prompt(fingerprints, target_context), che è deterministica
-e dipende dal contesto target (può variare tra run diversi).
+The flux_prompt is NOT generated here: it is built on the fly in flux_loop.py
+via build_flux_prompt(fingerprints, target_context), which is deterministic
+and depends on the target context (it may vary across runs).
 
-Variabili d'ambiente:
-  R2P_PERVA_DATA   → path della cartella perva-data
-                     default: /leonardo_work/IscrC_MUSE/tballari/perva-data
-  R2P_MODELS_BASE  → base path modelli HuggingFace
-                     default: usa repo-id (download automatico)
-  R2P_CLUSTER_MODE → "true" per attivare cluster mode in config.py
+Environment variables:
+    R2P_PERVA_DATA   → path to the perva-data folder
+                                         default: 
+    R2P_MODELS_BASE  → base path for HuggingFace models
+                                         default: uses repo-id (automatic download)
+    R2P_CLUSTER_MODE → "true" to enable cluster mode in config.py
 """
 
 import os
@@ -45,20 +45,20 @@ if project_root not in sys.path:
 from config import Config
 
 # ---------------------------------------------------------------------------
-# Costanti / env
+# Constants / env
 # ---------------------------------------------------------------------------
 
-# Path perva-data: env var > fallback cluster Leonardo
+# perva-data path: env var > Leonardo cluster fallback
 _DEFAULT_PERVA = "/leonardo_work/IscrC_MUSE/tballari/perva-data"
 PERVA_DATA_DIR = os.environ.get("R2P_PERVA_DATA", _DEFAULT_PERVA)
 
 
 # ---------------------------------------------------------------------------
-# Prompt per Qwen3-VL (adattato da get_detailed_input_msgs_household di R2P)
+# Qwen3-VL prompt (adapted from R2P get_detailed_input_msgs_household)
 # ---------------------------------------------------------------------------
 
-# Esempio one-shot: stesso oggetto usato nel repo originale R2P (wnr = piatto ceramica).
-# Se l'immagine non è disponibile, il sistema cade in zero-shot automaticamente.
+# One-shot example: same object used in the original R2P repo (wnr = ceramic plate).
+# If the image is unavailable, the system automatically falls back to zero-shot.
 _ONESHOT_IMAGE_PATH = os.path.join(project_root, "example_database", "wnr.jpg")
 
 _ANSWER_FORMAT = {
@@ -90,9 +90,9 @@ def _build_extraction_messages(
     concept_id: str,
 ) -> list:
     """
-    Costruisce i messaggi per Qwen3-VL per estrarre fingerprints in JSON.
+    Builds the Qwen3-VL messages to extract fingerprints in JSON.
 
-    Usa one-shot se l'immagine esempio è disponibile, zero-shot altrimenti.
+    Uses one-shot if the example image is available, zero-shot otherwise.
 
     Args:
         image:      PIL Image dell'oggetto da analizzare
@@ -145,10 +145,10 @@ def _build_extraction_messages(
 
 def _parse_json_response(raw: str) -> dict:
     """
-    Pulisce e parsa la risposta JSON di Qwen3-VL.
-    Gestisce markdown fences e testo extra attorno al JSON.
+    Cleans and parses the Qwen3-VL JSON response.
+    Handles markdown fences and extra text around the JSON.
     """
-    # Rimuovi fences markdown
+    # Remove markdown fences
     cleaned = raw.strip().strip("```json").strip("```").strip()
 
     # Estrai solo il blocco JSON se c'è testo extra
@@ -162,11 +162,11 @@ def _parse_json_response(raw: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# CLIP image selector (mantenuto da build_database originale)
+# CLIP image selector (kept from the original build_database)
 # ---------------------------------------------------------------------------
 
 class _CLIPSelector:
-    """Seleziona l'immagine più rappresentativa di un concept via CLIP centroid."""
+    """Select the most representative image of a concept via CLIP centroid."""
 
     def __init__(self, device: str = "cuda"):
         from transformers import CLIPModel, CLIPProcessor
@@ -178,7 +178,7 @@ class _CLIPSelector:
     @torch.no_grad()
     def select(self, image_paths: list[str], seed: int = 42, top_k: int = 3) -> tuple[str, list[str]]:
         """
-        Restituisce il path dell'immagine più vicina al centroide CLIP e la lista delle top-K.
+        Returns the path of the image closest to the CLIP centroid and the top-K list.
         """
         if len(image_paths) == 1:
             return image_paths[0], [image_paths[0]]
@@ -224,13 +224,13 @@ class _CLIPSelector:
 
 class DatabaseBuilder:
     """
-    Costruisce il database fingerprints per R2P-GEN.
+    Builds the fingerprints database for R2P-GEN.
 
     Per ogni concept:
-      1. Seleziona immagine rappresentativa (CLIP centroid)
+    1. Select the representative image (CLIP centroid)
       2. Estrae fingerprints con Qwen3-VL
-      3. Salva in database.json (incluso il path dell'immagine rappresentativa,
-         FIX 8: campo "representative_image")
+        3. Save in database.json (including the representative image path,
+            FIX 8: field "representative_image")
 
     Il flux_prompt viene costruito on-the-fly in flux_loop.py.
     """
@@ -303,7 +303,7 @@ class DatabaseBuilder:
     # ------------------------------------------------------------------
 
     def _get_concepts(self) -> list[dict]:
-        """Scansiona perva-data e restituisce la lista di tutti i concept."""
+        """Scan perva-data and return the list of all concepts."""
         abs_path = os.path.abspath(self.perva_data_dir)
         print(f"   🔍 perva-data: {abs_path}")
 
@@ -360,7 +360,7 @@ class DatabaseBuilder:
         # I messaggi sono già in formato Qwen3-VL nativo —
         # li passiamo direttamente a model_interface.chat() senza adapter
         output = self.reasoner.model_interface.chat(msgs)
-        # chat() restituisce (dict, str) da Qwen3VLModel oppure dict da ModelInterface
+        # chat() returns (dict, str) from Qwen3VLModel or dict from ModelInterface
         if isinstance(output, tuple):
             _, raw_text = output
         else:
@@ -377,7 +377,7 @@ class DatabaseBuilder:
         concept_id = concept_data["concept_id"]
         images     = concept_data["images"]
 
-        # Selezione immagine rappresentativa E top_k
+        # Select representative image and top_k
         if self.use_clip_sel and self.clip_selector is not None:
             representative, top_k_paths = self.clip_selector.select(images, seed=self.seed)
         else:
@@ -448,7 +448,7 @@ class DatabaseBuilder:
                 print(f"\n   ⚠️  Errore su '{cid}': {e}")
                 continue
 
-        # 3. Salva
+        # 3. Save
         print(f"\n[3/3] Saving database → {self.output_path}")
         os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
         with open(self.output_path, "w", encoding="utf-8") as f:

@@ -23,7 +23,7 @@ class ClipScoreCalculator:
         inputs = self.feature_extractor(images=image, return_tensors="pt")
         with torch.no_grad():
             output = self.clip_model.get_image_features(inputs['pixel_values'].to(self.device))
-        # get_image_features può restituire un tensore o un oggetto — gestiamo entrambi
+        # get_image_features can return either a tensor or an object; handle both
         if hasattr(output, 'image_embeds'):
             features = output.image_embeds
         elif hasattr(output, 'pooler_output'):
@@ -53,7 +53,7 @@ class ClipScoreCalculator:
         if not attribute_list:
             return 0.0, {}
             
-        if len(attribute_list) > 20: # Aumentato limite per sicurezza
+        if len(attribute_list) > 20: 
             attribute_list = attribute_list[:20]
 
         try:
@@ -83,14 +83,4 @@ class ClipScoreCalculator:
             print(f"Error in CLIP calculation: {e}")
             return 0.0, {}
     
-#     def format_text_options_msgs(self, test_image, prompt):
-#         """
-#         Prepara il payload standard: 1 Immagine + Prompt.
-#         """
-#         if isinstance(test_image, str):
-#             test_image = Image.open(test_image).convert('RGB')
 
-#         return [{
-#             'role': 'user', 
-#             'content': [test_image, prompt]
-#         }]

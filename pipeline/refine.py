@@ -1,7 +1,7 @@
 """
-Modulo di Refinement per R2P-GEN (FLUX Edition).
-Contiene le logiche per l'interazione con i server API (VLM e FLUX)
-per tentare il recupero delle immagini fallite.
+Refinement module for R2P-GEN (FLUX Edition).
+Contains the logic for interacting with the API servers (VLM and FLUX)
+to recover failed images.
 
 Escalation strategy (3 levels):
   - Attempt 1 (gentle):   clear natural language, attributes placed at the start

@@ -1,23 +1,23 @@
 # pipeline/judge.py
 """
-Final Judge per R2P-GEN Pipeline.
+Final Judge for the R2P-GEN pipeline.
 
-IMPORTANTE: Il Final Judge usa un modello DIVERSO da verify.py!
-- verify.py / refine.py loop → MiniCPM / Qwen3-VL (verifica durante generazione)
-- judge.py → InternVL3_5-8B (valutazione finale indipendente)
+IMPORTANT: The Final Judge uses a DIFFERENT model than verify.py!
+- verify.py / refine.py loop → MiniCPM / Qwen3-VL (verification during generation)
+- judge.py → InternVL3_5-8B (independent final evaluation)
 
-Questo garantisce una valutazione imparziale: il modello che ha guidato
-il refinement NON è lo stesso che giudica il risultato finale.
+This ensures an unbiased evaluation: the model that guided refinement is
+not the same one that judges the final result.
 
-Valutazione finale con:
-1. VQA-based attribute verification (TIFA-style) con InternVL3_5-8B
-2. Metriche quantitative (CLIP-I, CLIP-T, DINO-I)
-3. Score aggregato finale con breakdown interpretabile
+Final evaluation with:
+1. VQA-based attribute verification (TIFA-style) with InternVL3_5-8B
+2. Quantitative metrics (CLIP-I, CLIP-T, DINO-I)
+3. Final aggregated score with interpretable breakdown
 
 Usage:
     from pipeline.judge import FinalJudge
 
-    judge = FinalJudge()  # Usa InternVL3_5-8B (diverso da MiniCPM/Qwen3!)
+    judge = FinalJudge()  # Uses InternVL3_5-8B (different from MiniCPM/Qwen3!)
     result = judge.evaluate(
         generated_image="output/generated.png",
         reference_image="data/target.jpg",
@@ -156,10 +156,9 @@ class FinalJudge:
 
     @property
     def reasoner(self):
-        """
-        Lazy load InternVL3_5Reasoning.
+        """Lazy load InternVL3_5Reasoning.
 
-        Restituisce l'istanza di InternVL3_5Reasoning (o None se use_vqa=False).
+        Returns the InternVL3_5Reasoning instance (or None if use_vqa=False).
         """
         if self._reasoner is None and self.use_vqa:
             print(f"   📦 Loading Final Judge VLM: InternVL3_5-8B...")
@@ -172,10 +171,10 @@ class FinalJudge:
                     torch_dtype=self._torch_dtype,
                     attn_implementation=self._attn_implementation,
                 )
-                # FIX: salva il riferimento alla classe — l'import sopra e'
-                # locale a questa property e NON e' visibile in altri metodi
-                # (es. _vqa_evaluate_attribute), che quindi non possono fare
-                # "InternVL3_5Reasoning._resize(...)" direttamente.
+                # FIX: store the class reference — the import above is local to
+                # this property and is NOT visible in other methods
+                # (e.g. _vqa_evaluate_attribute), which therefore cannot call
+                # "InternVL3_5Reasoning._resize(...)" directly.
                 self._reasoner_cls = InternVL3_5Reasoning
                 print(f"      ✅ InternVL3_5-8B loaded successfully")
             except Exception as e:

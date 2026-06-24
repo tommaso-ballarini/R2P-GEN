@@ -2,11 +2,11 @@
 """
 analyze_judge_scores.py
 
-Legge final_judge_results.json e mostra la distribuzione completa dei
-final_score, con i percentili principali e un istogramma testuale.
+Reads final_judge_results.json and shows the full distribution of
+final_score, with main percentiles and a textual histogram.
 
-Usalo DOPO aver girato run_judge_test_100.sh per scegliere il threshold
-da impostare in Config.Refine.TARGET_ACCURACY.
+Use AFTER running run_judge_test_100.sh to choose the threshold
+to set in Config.Refine.TARGET_ACCURACY.
 
 Usage:
     python analyze_judge_scores.py <path/a/final_judge_results.json>
@@ -19,7 +19,7 @@ import os
 
 
 def percentile(sorted_vals: list, p: float) -> float:
-    """Percentile lineare su lista già ordinata."""
+    '''Percentile calculation for a sorted list of values.'''
     n = len(sorted_vals)
     idx = p / 100 * (n - 1)
     lo, hi = int(idx), min(int(idx) + 1, n - 1)
@@ -27,7 +27,7 @@ def percentile(sorted_vals: list, p: float) -> float:
 
 
 def histogram(vals: list, bins: int = 20, width: int = 40) -> str:
-    """Istogramma testuale normalizzato."""
+    '''Normalized histogram of values as a string.'''
     lo, hi = min(vals), max(vals)
     step = (hi - lo) / bins
     counts = [0] * bins
@@ -47,7 +47,7 @@ def histogram(vals: list, bins: int = 20, width: int = 40) -> str:
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else None
 
-    # Auto-detect se non specificato
+    # Auto-detect if not specified
     if path is None:
         candidates = [
             "/leonardo_work/IscrC_MUSE/tballari/FM_Data/output/test_100/final_judge_results.json",
@@ -59,7 +59,7 @@ def main():
                 break
 
     if path is None or not os.path.exists(path):
-        print("❌ File non trovato. Specifica il path:")
+        print("❌ File not found. Specify the path:")
         print("   python analyze_judge_scores.py <path/a/final_judge_results.json>")
         sys.exit(1)
 
@@ -67,50 +67,50 @@ def main():
         data = json.load(f)
 
     print(f"\n{'='*60}")
-    print(f" DISTRIBUZIONE FINAL SCORE — {os.path.basename(path)}")
-    print(f" N concetti: {len(data)}")
+    print(f" Distribution of FINAL SCORE — {os.path.basename(path)}")
+    print(f" N concepts: {len(data)}")
     print(f"{'='*60}\n")
 
     scores = sorted(d.get("final_score", 0.0) for d in data.values())
     n = len(scores)
 
-    # ── Statistiche base ──────────────────────────────────────
+    # ── Base statistics ──────────────────────────────────────
     mean = sum(scores) / n
     variance = sum((s - mean) ** 2 for s in scores) / n
     std = variance ** 0.5
 
     print(f"  Min:    {scores[0]:.3f}   ({scores[0]:.1%})")
     print(f"  Max:    {scores[-1]:.3f}   ({scores[-1]:.1%})")
-    print(f"  Media:  {mean:.3f}   ({mean:.1%})")
+    print(f"  Mean:  {mean:.3f}   ({mean:.1%})")
     print(f"  Std:    {std:.3f}")
 
-    # ── Percentili ───────────────────────────────────────────
-    print(f"\n  {'Percentile':<12} {'Score':>8}   {'Pass rate se usato come threshold':>10}")
+    # ── Percentiles ───────────────────────────────────────────
+    print(f"\n  {'Percentile':<12} {'Score':>8}   {'Pass rate if used as threshold':>10}")
     print(f"  {'-'*55}")
     for p in [10, 25, 50, 75, 90, 95]:
         v = percentile(scores, p)
-        # Se usiamo v come threshold, quanta % dei concetti passa?
+        # If we use v as threshold, what percentage of concepts would pass?
         pass_rate = sum(1 for s in scores if s >= v) / n
-        print(f"  P{p:02d}         {v:>8.3f}   {pass_rate:>6.1%} dei concetti supererebbe")
+        print(f"  P{p:02d}         {v:>8.3f}   {pass_rate:>6.1%} of concepts would pass")
 
-    # ── Istogramma ───────────────────────────────────────────
-    print(f"\n  Distribuzione (istogramma):\n")
+    # ── Histogram ───────────────────────────────────────────
+    print(f"\n  Distribution (histogram):\n")
     print(histogram(scores))
 
-    # ── Breakdown per metrica ─────────────────────────────────
-    print(f"\n  Breakdown per metrica (media su tutti i concetti):\n")
+    # ── Breakdown per metric ─────────────────────────────────
+    print(f"\n  Breakdown per metric (mean among all concepts):\n")
     metrics = ["clip_i", "clip_t", "dino_i", "tifa_score"]
     for m in metrics:
         vals = [d.get("metrics", {}).get(m, 0.0) for d in data.values()]
         vals = [v for v in vals if v > 0]
         if vals:
-            print(f"  {m:<15} media={sum(vals)/len(vals):.3f}  "
+            print(f"  {m:<15} mean={sum(vals)/len(vals):.3f}  "
                   f"min={min(vals):.3f}  max={max(vals):.3f}  "
-                  f"(su {len(vals)}/{n} concetti)")
+                  f"(out of {len(vals)}/{n} concepts)")
 
-    # ── Suggerimento threshold ────────────────────────────────
+    # ── Suggested threshold ────────────────────────────────
     print(f"\n{'='*60}")
-    print(f" SUGGERIMENTO THRESHOLD")
+    print(f" SUGGESTED THRESHOLD")
     print(f"{'='*60}")
 
     p50 = percentile(scores, 50)
@@ -118,23 +118,23 @@ def main():
     p90 = percentile(scores, 90)
 
     print(f"""
-  Scegli in base all'obiettivo del progetto:
+  Choose based on the project's objective:
 
   ┌─────────────────────────────────────────────────────┐
-  │ Obiettivo             │ Threshold │ Pass rate atteso │
+  │ Objective             │ Threshold │ Expected Pass Rate │
   ├─────────────────────────────────────────────────────┤
-  │ Permissivo (baseline) │   {p50:.2f}    │     ~50%         │
-  │ Bilanciato            │   {p75:.2f}    │     ~25%         │
-  │ Aggressivo (alta QA)  │   {p90:.2f}    │     ~10%         │
+  │ Permissive (baseline) │   {p50:.2f}    │     ~50%         │
+  │ Balanced              │   {p75:.2f}    │     ~25%         │
+  │ Aggressive (high QA)  │   {p90:.2f}    │     ~10%         │
   └─────────────────────────────────────────────────────┘
 
   In config.py:
-      TARGET_ACCURACY = {p75:.2f}  # bilanciato — modifica a piacere
+      TARGET_ACCURACY = {p75:.2f}  # balanced — modify as needed
 """)
 
-    # ── Lista concetti falliti ────────────────────────────────
+    # ── List of failed concepts ────────────────────────────────
     chosen = p75
-    print(f"  Concetti che NON passerebbero con threshold={chosen:.2f}:\n")
+    print(f"  Concepts that would NOT pass with threshold={chosen:.2f}:\n")
     for cid, d in sorted(data.items(), key=lambda x: x[1].get("final_score", 0)):
         s = d.get("final_score", 0)
         if s < chosen:

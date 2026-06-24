@@ -6,7 +6,7 @@ import time
 from PIL import Image
 from tqdm import tqdm
 
-# Importiamo le AutoPipelines per gestire in sicurezza T2I e I2I
+# Import AutoPipelines to safely handle T2I and I2I
 from diffusers import AutoPipelineForText2Image, AutoPipelineForImage2Image
 
 from config import Config
@@ -16,17 +16,14 @@ class Generator:
     def __init__(self, database_path: str, output_dir: str, device: str = "cuda:0",
                  num_shards: int = 1, shard_index: int = 0,
                  use_naive_prompt: bool = False, no_image_cond: bool = False):
-        """
-        Inizializza il generatore.
-        Aggiunti parametri per ablazioni: use_naive_prompt e no_image_cond.
-        """
+        """Initialize the generator with ablation parameters."""
         self.num_shards = num_shards
         self.shard_index = shard_index
         self.database_path = database_path
         self.output_dir = output_dir
         self.device = device
         
-        # Flag per le ablazioni
+        # Ablation flags
         self.use_naive_prompt = use_naive_prompt
         self.no_image_cond = no_image_cond
         
@@ -34,11 +31,11 @@ class Generator:
         self._load_pipeline()
         
     def _load_pipeline(self):
-        """Carica FLUX (T2I o I2I a seconda delle ablazioni)."""
+        """Load FLUX (T2I or I2I depending on the ablation)."""
         print(f"\n🚀 Inizializzazione FLUX in corso...")
         model_name_or_path = getattr(Config.Models, "FLUX_MODEL", "black-forest-labs/FLUX.1-schnell")
         
-        # Scegliamo la pipeline corretta in base all'ablazione
+        # Select the pipeline based on the ablation
         if self.no_image_cond:
             print("   ℹ️ Modalità Text-Only (no image conditioning) attivata.")
             pipe_class = AutoPipelineForText2Image
@@ -82,42 +79,42 @@ class Generator:
             t_concept = time.time()
             print(f"\n🎨 [{i+1}/{len(my_keys)}] Elaborazione concetto: {concept_id}")
             try:
-                # 1. Recupero dell'immagine sorgente (RAPPRESENTATIVA)
+                # 1. Retrieve the source (representative) image
                 source_image_path = content.get("representative_image")
                 if not source_image_path:
-                    # Fallback: usa la prima immagine della lista "image"
+                    # Fallback: use the first image in the "image" list
                     images = content.get("image", [])
                     if images:
                         source_image_path = images[0]
                     else:
                         print(f"   ⚠️ Nessuna immagine sorgente trovata per {concept_id}.")
                         continue
-                # Rendi il percorso assoluto (per sicurezza)
+                # Make the path absolute for safety
                 source_image_path = os.path.abspath(source_image_path)
                 
 
-                # 3. Costruzione del prompt FLUX (Ablazione Naive vs Fingerprints)
+                # 3. Build the FLUX prompt (naive prompt vs fingerprints)
                 if self.use_naive_prompt:
                     category = content.get("category", "object")
                     flux_prompt = f"A high-quality photograph of a {category}. The {category} is {target_context}."
                     print(f"   📝 NAIVE Prompt: {flux_prompt[:100]}...")
                 else:
-                    # Estraiamo 'info' dal JSON prima di passarlo al prompt builder
+                    # Extract 'info' from the JSON before passing it to the prompt builder
                     attributes = content.get("info", {})
                     flux_prompt = build_flux_prompt(attributes, target_context)
                     print(f"   📝 FULL Prompt: {flux_prompt[:100]}...")
                 
                 # ---------------------------------------------------------
-                # FIX SEED: Dinamico per Text-to-Image (A, B), Statico per Img2Img (C-F)
+                # Seed fix: dynamic for Text-to-Image (A, B), static for Img2Img (C-F)
                 # ---------------------------------------------------------
                 if self.no_image_cond:
-                    # Ablazioni A e B (Text-Only): Usiamo un seed dinamico basato sul nome del concetto
+                    # Ablations A and B (Text-Only): use a dynamic seed based on the concept name
                     current_seed = Config.Generate.SEED + (abs(hash(concept_id)) % 10000)
                 else:
-                    # Ablazioni C, D, E, F (Img2Img): Usiamo il seed statico globale
+                    # Ablations C, D, E, F (Img2Img): use the global static seed
                     current_seed = Config.Generate.SEED
                 
-                # Setup UNICO del generatore per la riproducibilità
+                # Single generator setup for reproducibility
                 generator = torch.Generator(device=self.device).manual_seed(current_seed)
 
                 # # 3. Costruzione del prompt FLUX (Ablazione Naive vs Fingerprints)
@@ -142,14 +139,14 @@ class Generator:
                 # 4 & 5. Generazione con FLUX (Ablazione Text-Only vs Img2Img)
                 with torch.inference_mode():
                     if self.no_image_cond:
-                        # Condizioni A, B: Niente immagine in input
+                        # Conditions A, B: no image input
                         output_img = self.pipe(
                             prompt=flux_prompt,
                             num_inference_steps=4,
                             generator=generator
                         ).images[0]
                     else:
-                        # Condizioni C, D, E, F: Usa immagine
+                        # Conditions C, D, E, F: use the image
                         seed_img = Image.open(source_image_path).convert("RGB")
                         target_size = Config.Images.REFERENCE_IMAGE_SIZE
                         seed_img = seed_img.resize((target_size, target_size), Image.Resampling.LANCZOS)
@@ -206,7 +203,7 @@ class Generator:
                 print(f"   ❌ Errore {concept_id}: {str(e)}")
                 stats["failed"] += 1
         
-        # Salva il log
+        # Save the log
         prompts_path = os.path.join(self.output_dir, "prompts.json")
         with open(prompts_path, "w", encoding="utf-8") as f:
             json.dump(prompts_log, f, indent=4, ensure_ascii=False)
@@ -218,7 +215,7 @@ class Generator:
         return stats
 
     def cleanup(self):
-        """Libera rigorosamente la memoria."""
+        """Release memory."""
         print("\n🧹 Pulizia VRAM da FLUX...")
         if self.pipe is not None:
             del self.pipe

@@ -1,17 +1,11 @@
 # pipeline/metrics.py
 """
-Metriche di Valutazione per Image Personalization.
-Supportate dalla letteratura:
+Metrics for evaluating image personalization quality:
 - CLIP-I: Identity preservation via CLIP image embeddings
 - CLIP-T: Text-image alignment via CLIP
 - DINO-I: Identity preservation via DINO features (texture/details)
 - TIFA: VQA-based attribute faithfulness
 
-References:
-- TIFA (Hu et al., ICCV 2023): VQA-based faithfulness evaluation
-- CLIP (Radford et al., 2021): Vision-language similarity
-- DINO (Caron et al., 2021): Self-supervised visual features
-- DreamBooth (Ruiz et al., CVPR 2023): CLIP-I/DINO-I for personalization
 """
 
 import os
@@ -23,11 +17,7 @@ from typing import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass
 import numpy as np
 
-# FIX: 'Config' veniva usato in clip_model (Config.Models.CLIP_MODEL) ma non
-# era mai importato in questo file -> NameError garantito al primo accesso
-# alla property clip_model. Aggiunto import + bootstrap del path come in
-# pipeline/judge.py, per sicurezza se il modulo viene eseguito/importato da
-# un contesto diverso dalla root del progetto.
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
@@ -57,10 +47,10 @@ class MetricsResult:
         }
 
 def _extract_features(output):
-    """get_image_features/get_text_features dovrebbero gia' restituire un
-    tensor, ma alcuni checkpoint CLIP con modeling custom restituiscono
-    l'output grezzo dell'encoder (es. BaseModelOutputWithPooling) senza
-    applicare la projection. Estraiamo il tensore in modo difensivo."""
+    """
+    Extract features from the output of a model, handling different possible return types.
+    """
+
     if torch.is_tensor(output):
         return output
     if hasattr(output, "image_embeds"):
@@ -75,9 +65,7 @@ def _extract_features(output):
 
 class MetricsCalculator:
     """
-    Calcola metriche di valutazione per image personalization.
-    
-    Lazy loading: i modelli vengono caricati solo quando necessario.
+    Class to compute evaluation metrics for image personalization.
     """
     
     def __init__(self, device: str = "cuda"):
@@ -113,9 +101,9 @@ class MetricsCalculator:
     
     @property
     def dino_model(self):
-        """Lazy load DINO model (via transformers, non torch.hub: torch.hub
-        contatta GitHub direttamente e ignora HF_HUB_OFFLINE, quindi fallisce
-        su nodi senza internet anche con la cache HF gia' pronta)."""
+        """Lazy load DINO model (via transformers, not torch.hub: torch.hub
+        contacts GitHub directly and ignores HF_HUB_OFFLINE, so it fails on
+        offline nodes even when the HF cache is already populated)."""
         if self._dino_model is None:
             print("   📦 Loading DINO model...")
             from transformers import AutoModel, AutoImageProcessor
@@ -135,10 +123,7 @@ class MetricsCalculator:
     ) -> float:
         """
         CLIP-I: Cosine similarity between CLIP embeddings of generated and reference images.
-        
-        Used by DreamBooth and IP-Adapter papers for identity preservation.
-        Higher = better identity preservation.
-        
+    
         Args:
             generated_image: Generated image path or PIL Image
             reference_image: Reference/target image path or PIL Image
@@ -178,9 +163,6 @@ class MetricsCalculator:
     ) -> float:
         """
         CLIP-T: Cosine similarity between generated image and text prompt.
-        
-        Measures prompt faithfulness / text-image alignment.
-        Higher = better prompt following.
         
         Args:
             generated_image: Generated image path or PIL Image
@@ -225,10 +207,6 @@ class MetricsCalculator:
     ) -> float:
         """
         DINO-I: Cosine similarity between DINOv2 features.
-        
-        DINO features are better than CLIP for fine-grained visual details
-        (texture, material, small features). Used in DreamBooth evaluation.
-        Higher = better identity preservation at detail level.
         
         Args:
             generated_image: Generated image path or PIL Image
@@ -291,7 +269,7 @@ class MetricsCalculator:
             if any(neg in value_lower for neg in ["none", "n/a", "unknown", "no visible"]):
                 continue
             
-            # Generate question based on attribute type
+            # Generate a question based on the attribute type
             if attr == "color":
                 question = f"Is the main color of the object {value}?"
             elif attr == "material":

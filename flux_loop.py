@@ -642,8 +642,6 @@ if __name__ == "__main__":
                         required=True)
     parser.add_argument("--num-shards",  type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
-    parser.add_argument("--num-shards",  type=int, default=1)
-    parser.add_argument("--shard-index", type=int, default=0)
     
     # ablation's flags
     parser.add_argument("--naive-prompt", action="store_true", help="Usa un prompt base senza fingerprints")

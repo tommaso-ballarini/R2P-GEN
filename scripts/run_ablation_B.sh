@@ -18,14 +18,15 @@ nvidia-smi | head -20
 echo "=========================================================="
 
 module purge
-module load profile/deeplrn
+# Rimosso il modulo profile/deeplrn per non corrompere l'ambiente Conda
 module load cuda/12.2
 module load cudnn
 
 cd /leonardo/home/userexternal/tballari/R2P-GEN
-source $HOME/miniconda3/bin/activate FM_env
 
-export PYTHONPATH=$PWD:$PYTHONPATH
+# Usiamo il path assoluto di python del tuo ambiente Conda
+CONDA_PYTHON=/leonardo_work/IscrC_MUSE/tballari/envs/FM_env/bin/python
+
 mkdir -p logs/ablation_B
 
 export R2P_PERVA_DATA=/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data
@@ -48,18 +49,16 @@ mkdir -p "$OUTPUT_DIR"
 echo "----------------------------------------------------------"
 echo "STAGE 1 — GENERATE ONLY"
 echo "----------------------------------------------------------"
-CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+CUDA_VISIBLE_DEVICES=0 $CONDA_PYTHON -u flux_loop.py \
     --stage generate_only \
     --database "$DATABASE" \
     --output   "$OUTPUT_DIR"\
     --no-image-cond
 
-
-
 echo "----------------------------------------------------------"
 echo "STAGE 4 — FINAL JUDGE"
 echo "----------------------------------------------------------"
-CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+CUDA_VISIBLE_DEVICES=0 $CONDA_PYTHON -u flux_loop.py \
     --stage final_judge \
     --database "$DATABASE" \
     --output   "$OUTPUT_DIR"

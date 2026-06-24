@@ -18,7 +18,6 @@ nvidia-smi | head -20
 echo "=========================================================="
 
 module purge
-module load profile/deeplrn
 module load cuda/12.2
 module load cudnn
 
@@ -45,15 +44,16 @@ DATABASE=database/database_centroid.json
 
 mkdir -p "$OUTPUT_DIR"
 
+CONDA_PYTHON=/leonardo_work/IscrC_MUSE/tballari/envs/FM_env/bin/python
+
 echo "----------------------------------------------------------"
 echo "STAGE 1 — GENERATE ONLY"
 echo "----------------------------------------------------------"
-CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+CUDA_VISIBLE_DEVICES=0 $CONDA_PYTHON -u flux_loop.py \
     --stage generate_only \
     --database "$DATABASE" \
     --output   "$OUTPUT_DIR"\
     --naive-prompt --no-image-cond
-
 
 
 echo "----------------------------------------------------------"

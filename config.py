@@ -64,7 +64,7 @@ class Config:
         SOURCE_DATA_DIR = os.path.join(_DATA_BASE, "perva-data")
         DATASET_SPLIT = "train"
 
-        DEBUG_MODE = True
+        DEBUG_MODE = False
         DEBUG_LIMIT = 30
 
         USE_CLIP_CATEGORY = True

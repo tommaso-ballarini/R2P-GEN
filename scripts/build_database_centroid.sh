@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=dreambench_db
+#SBATCH --job-name=r2p_build_db
 #SBATCH --account=IscrC_MUSE
 #SBATCH --partition=boost_usr_prod
 #SBATCH --nodes=1
@@ -8,8 +8,8 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:30:00
-#SBATCH --output=logs/dreambench_db/%j.out
-#SBATCH --error=logs/dreambench_db/%j.err
+#SBATCH --output=logs/build_centroid/%j.out
+#SBATCH --error=logs/build_centroid/%j.err
 
 # ===========================================================================
 # 1. Setup
@@ -21,21 +21,20 @@ nvidia-smi | head -20
 echo "=========================================================="
 
 module purge
-module load profile/deeplrn
+# Carichiamo solo CUDA, evitiamo profile/deeplrn per non corrompere Conda
 module load cuda/12.2
 module load cudnn
 
 cd /leonardo/home/userexternal/tballari/R2P-GEN
-source $HOME/miniconda3/bin/activate FM_env
+# Usiamo il path assoluto di python del tuo ambiente Conda
+CONDA_PYTHON=/leonardo_work/IscrC_MUSE/tballari/envs/FM_env/bin/python
 
-mkdir -p logs/dreambench_db database
+mkdir -p logs/build_db database
 
 # ===========================================================================
 # 2. Env var
 # ===========================================================================
-# ⚠️ PUNTA ALLA NUOVA CARTELLA DREAMBENCH CREATA NELLA FASE 1
-export R2P_DATA_DIR=/leonardo_work/IscrC_MUSE/tballari/FM_Data/dreambench-data
-
+export R2P_PERVA_DATA=/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data
 export R2P_MODELS_BASE=/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface
 export R2P_CLUSTER_MODE=true
 export HF_HOME=/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface
@@ -47,58 +46,54 @@ export HF_HUB_OFFLINE=1
 
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
+# Variabile per il nome del database che ci aspettiamo
+DB_FILE="database/database_centroid.json"
+
 # ===========================================================================
 # 3. Sanity check prima di girare
 # ===========================================================================
 echo "--- Sanity checks ---"
-python -c "from config import Config; Config.print_summary()"
+$CONDA_PYTHON -c "from config import Config; Config.print_summary()"
 echo "Qwen3-VL exists: $(ls $R2P_MODELS_BASE/Qwen3-VL-8B-Instruct/config.json 2>/dev/null && echo YES || echo NO)"
-echo "dreambench-data exists: $(ls $R2P_PERVA_DATA/test/ 2>/dev/null | head -3)"
+echo "perva-data exists: $(ls $R2P_PERVA_DATA/train/ 2>/dev/null | head -3)"
 echo "---------------------"
 
 # ===========================================================================
-# 4. Build database per DreamBench
+# 4. Build database (DEBUG_MODE=True, DEBUG_LIMIT=5 da config.py)
 # ===========================================================================
-echo "Avvio estrazione fingerprint DreamBench (Two-Stage Pipeline)..."
-# Usiamo --split test perché lo script prepare_dreambench.py ha creato la struttura "test"
-python -u pipeline/build_database_db.py \
-    --data-dir $R2P_DATA_DIR \
-    --split test \
-    --debug \
-    --debug-limit 3
-
-# NOTA: Quando vorrai processare tutti i 30 soggetti, 
-# ti basterà rimuovere i flag --debug e --debug-limit 3 qui sopra.
+echo "Avvio build database..."
+# Controlla che il file si chiami davvero build_database_centroid.py!
+$CONDA_PYTHON -u pipeline/build_database_centroid.py \
+    --split train \
+    
 
 # ===========================================================================
 # 5. Verifica output
 # ===========================================================================
 echo ""
 echo "--- Output check ---"
-if [ -f database/database_perva_test.json ]; then
-    echo "✅ Database creato correttamente!"
-    python -c "
-import json
-# Il db prende il nome dallo split test a meno di config override
-db_path = 'database/database.json'
-try:
-    with open(db_path) as f:
-        db = json.load(f)
-except FileNotFoundError:
-    db_path = 'database/database_perva_test.json'
-    with open(db_path) as f:
-        db = json.load(f)
 
+# Se il file centroid non c'è, controlliamo se ha usato il nome di fallback con lo split
+if [ ! -f "$DB_FILE" ] && [ -f "database/database_centroid_perva_train.json" ]; then
+    DB_FILE="database/database_centroid_perva_train.json"
+fi
+
+if [ -f "$DB_FILE" ]; then
+    echo "✅ $DB_FILE creato"
+    $CONDA_PYTHON -c "
+import json
+with open('$DB_FILE') as f:
+    db = json.load(f)
 concepts = db.get('concept_dict', {})
-print(f'   Concetti estratti: {len(concepts)}')
-for cid, entry in list(concepts.items())[:3]:
-    print(f'\n   [{cid}]:')
-    print(f'     Tipo classificato: {entry.get(\"info\", {}).get(\"_entity_type\", \"MANCANTE\")}')
-    print(f'     General: {entry.get(\"info\", {}).get(\"general\", \"\")}')
-    print(f'     Chiavi estratte: {list(entry.get(\"info\", {}).keys())}')
+print(f'   Concetti: {len(concepts)}')
+for cid, entry in list(concepts.items())[:2]:
+    print(f'   {cid}:')
+    print(f'     representative_image: {entry.get(\"representative_image\", \"MANCANTE\")}')
+    print(f'     images count: {len(entry.get(\"image\", []))}')
+    print(f'     info keys: {list(entry.get(\"info\", {}).keys())}')
 "
 else
-    echo "❌ file del database NON trovato. Controlla i log di errore."
+    echo "❌ Nessun file database_centroid trovato in database/"
 fi
 
 echo "=========================================================="

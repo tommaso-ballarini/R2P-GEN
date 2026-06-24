@@ -24,12 +24,7 @@ if project_root not in sys.path:
 
 from config import Config
 
-# ---------------------------------------------------------------------------
-# Constants / env
-# ---------------------------------------------------------------------------
 
-_DEFAULT_PERVA = "/leonardo_work/IscrC_MUSE/tballari/perva-data"
-PERVA_DATA_DIR = os.environ.get("R2P_PERVA_DATA", _DEFAULT_PERVA)
 
 # ---------------------------------------------------------------------------
 # Prompts for Qwen3-VL
@@ -79,7 +74,7 @@ def _build_classification_message(image: Image.Image) -> list:
 def _build_extraction_messages(
     image: Image.Image,
     category: str,
-    concept_id: str,
+    subject_name: str,
     entity_type: str
 ) -> list:
     """Step 2: Estrae i fingerprint usando lo schema corretto isolando il soggetto."""
@@ -92,14 +87,14 @@ def _build_extraction_messages(
         entity_desc = "inanimate object"
 
     question_test = (
-        f"Describe the {entity_desc} ({category}) in the image identified by the concept-identifier <{concept_id}>.\n"
+        f"Describe the {entity_desc} in the image. The subject identifier is <{subject_name}>.\n"
         f"CRITICAL RULES:\n"
         f"1. Describe the entity as if it were an isolated 3D model in an empty white room.\n"
         f"2. DO NOT describe the background, the environment, the lighting, or the camera angle.\n"
         f"3. DO NOT describe its pose or current action (e.g., ignore if it is sitting, running, or held by someone).\n"
         f"4. Your response MUST be valid JSON and follow EXACTLY this format:\n"
         f"{json.dumps(schema, indent=2)}\n\n"
-        f"The 'general' field MUST begin with '<{concept_id}> is ...'.\n"
+        f"The 'general' field MUST begin with '<{subject_name}> is ...'.\n"
         f"Respond ONLY with the JSON object. No extra text, no markdown fences."
     )
 
@@ -202,7 +197,7 @@ class DatabaseBuilder:
 
     def __init__(
         self,
-        perva_data_dir: str = PERVA_DATA_DIR,
+        perva_data_dir: str = None,
         dataset_split: str = None,
         debug_mode: bool = None,
         debug_limit: int = None,
@@ -211,7 +206,7 @@ class DatabaseBuilder:
         seed: int = None,
         device: str = None,
     ):
-        self.perva_data_dir  = perva_data_dir
+        self.perva_data_dir = perva_data_dir or os.environ.get("R2P_PERVA_DATA", "")
         self.dataset_split   = dataset_split   or Config.BuildDatabase.DATASET_SPLIT
         self.debug_mode      = debug_mode      if debug_mode is not None else Config.BuildDatabase.DEBUG_MODE
         self.debug_limit     = debug_limit     or Config.BuildDatabase.DEBUG_LIMIT
@@ -319,7 +314,7 @@ class DatabaseBuilder:
         # print(f"   ↳ [Qwen3-VL] Classificato <{concept_id}> come: {entity_type}")
 
         # --- STEP 2: Estrazione JSON ---
-        extract_msgs = _build_extraction_messages(image, category, concept_id, entity_type)
+        extract_msgs = _build_extraction_messages(image, category, category, entity_type)
         extract_output = self.reasoner.model_interface.chat(extract_msgs)
         
         if isinstance(extract_output, tuple):
@@ -356,9 +351,9 @@ class DatabaseBuilder:
         # Estrai fingerprints dalla vincitrice
         fingerprints = self._extract_fingerprints(image, category, concept_id)
 
-        concept_key = f"<{concept_id}>"
+        concept_key = f"<{category}>"
         entry = {
-            "name":     concept_id,
+            "name":     category,
             "image":    images,             # tutte le immagini del concept
             "representative_image": representative,
             "top_k_images": top_k_images,   # NUOVO CAMPO: storicizza i backup per il recovery
@@ -373,7 +368,7 @@ class DatabaseBuilder:
         print("BUILD DATABASE — R2P-GEN FLUX Edition (DIEGO VARIANTE SEMANTICA)")
         print("="*70)
         Config.print_summary()
-        print(f"  perva-data   : {self.perva_data_dir}")
+        print(f"  data-dir     : {self.perva_data_dir}")
         print(f"  split        : {self.dataset_split}")
         print(f"  SemanticCLIP : {self.use_clip_sel}")
         print(f"  debug        : {self.debug_mode} (limit={self.debug_limit})")
@@ -432,8 +427,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Build R2P-GEN fingerprint database (Semantic Variant)")
-    parser.add_argument("--perva-data",  type=str, default=None,
-                        help="Path a perva-data (default: R2P_PERVA_DATA env var)")
+    parser.add_argument("--data-dir",  type=str, default=None,
+                        help="Path to perva-data (default: R2P_PERVA_DATA env var)")
     parser.add_argument("--split",       type=str, default=None,
                         choices=["train", "test", "all"],
                         help="Dataset split")
@@ -446,7 +441,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     builder = DatabaseBuilder(
-        perva_data_dir    = args.perva_data or PERVA_DATA_DIR,
+        perva_data_dir    = args.data_dir,
         dataset_split     = args.split,
         debug_mode        = args.debug,
         debug_limit       = args.debug_limit,

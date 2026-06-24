@@ -18,14 +18,15 @@ nvidia-smi | head -20
 echo "=========================================================="
 
 module purge
-module load profile/deeplrn
+# Rimosso il modulo profile/deeplrn per non corrompere l'ambiente Conda
 module load cuda/12.2
 module load cudnn
 
 cd /leonardo/home/userexternal/tballari/R2P-GEN
-source $HOME/miniconda3/bin/activate FM_env
 
-export PYTHONPATH=$PWD:$PYTHONPATH
+# Usiamo il path assoluto di python del tuo ambiente Conda in modo coerente per TUTTO
+CONDA_PYTHON=/leonardo_work/IscrC_MUSE/tballari/envs/FM_env/bin/python
+
 mkdir -p logs/ablation_E
 
 export R2P_PERVA_DATA=/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data
@@ -60,7 +61,7 @@ trap cleanup EXIT
 echo "----------------------------------------------------------"
 echo "STAGE 1 — GENERATE ONLY"
 echo "----------------------------------------------------------"
-CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+CUDA_VISIBLE_DEVICES=0 $CONDA_PYTHON -u flux_loop.py \
     --stage generate_only \
     --database "$DATABASE" \
     --output   "$OUTPUT_DIR"
@@ -68,13 +69,14 @@ CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
 echo "----------------------------------------------------------"
 echo "STAGE 2 — VERIFY BASE"
 echo "----------------------------------------------------------"
-CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+CUDA_VISIBLE_DEVICES=0 $CONDA_PYTHON -u flux_loop.py \
     --stage verify_base \
     --database "$DATABASE" \
     --output   "$OUTPUT_DIR"
 
 REJECTED_PATH="$OUTPUT_DIR/rejected_concepts.json"
-REJECTED_COUNT=$(python3 -c "
+# Usiamo il Python sicuro anche per questo controllo in linea
+REJECTED_COUNT=$($CONDA_PYTHON -c "
 import json, os
 if os.path.exists('$REJECTED_PATH'):
     with open('$REJECTED_PATH') as f:
@@ -90,7 +92,7 @@ else
     echo "STAGE 3 — REFINE (Qwen3 su GPU 0 | FLUX su GPU 1)"
     echo "----------------------------------------------------------"
     echo "🚀 Avvio server FLUX in background sulla GPU 1 (porta $FLUX_PORT)..."
-    CONDA_PYTHON=$HOME/miniconda3/envs/FM_env/bin/python
+    
     CUDA_VISIBLE_DEVICES=1 $CONDA_PYTHON flux_server.py --port $FLUX_PORT \
         > "logs/ablation_E/flux_server_${SLURM_JOB_ID}.log" 2>&1 &
     FLUX_PID=$!
@@ -111,7 +113,7 @@ else
         exit 1
     fi
 
-    CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+    CUDA_VISIBLE_DEVICES=0 $CONDA_PYTHON -u flux_loop.py \
         --stage refine \
         --database "$DATABASE" \
         --output   "$OUTPUT_DIR"
@@ -125,7 +127,7 @@ fi
 echo "----------------------------------------------------------"
 echo "STAGE 4 — FINAL JUDGE"
 echo "----------------------------------------------------------"
-CUDA_VISIBLE_DEVICES=0 python -u flux_loop.py \
+CUDA_VISIBLE_DEVICES=0 $CONDA_PYTHON -u flux_loop.py \
     --stage final_judge \
     --database "$DATABASE" \
     --output   "$OUTPUT_DIR"

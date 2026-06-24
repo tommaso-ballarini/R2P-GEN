@@ -1,0 +1,76 @@
+{
+    "concept_dict": {
+        "<bag>": {
+            "name": "bag",
+            "image": [
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/1.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/10.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/11.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/12.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/13.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/2.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/3.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/4.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/5.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/6.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/7.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/8.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/9.jpg"
+            ],
+            "representative_image": "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/12.jpg",
+            "top_k_images": [
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/12.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/9.jpg",
+                "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/10.jpg"
+            ],
+            "info": {
+                "general": "<bag> is a light blue handbag with a zipper closure and a tag attached.",
+                "category": "handbag",
+                "shape": "rectangular with rounded edges",
+                "material": "leather",
+                "color": "light blue",
+                "pattern": "none",
+                "brand/text": "none",
+                "distinct features": "has a zipper with a gold-colored pull tab and a tag attached to the strap",
+                "_entity_type": "OBJECT"
+            },
+            "category": "bag"
+        }
+    },
+    "path_to_concept": {
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/1.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/10.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/11.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/2.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/3.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/4.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/5.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/6.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/7.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/8.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/alx/9.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/1.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/10.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/2.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/3.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/4.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/5.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/6.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/7.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/8.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/ash/9.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/1.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/10.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/11.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/12.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/13.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/2.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/3.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/4.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/5.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/6.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/7.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/8.jpg": "<bag>",
+        "/leonardo_work/IscrC_MUSE/tballari/FM_Data/data/perva-data/test/bag/bkq/9.jpg": "<bag>"
+    }
+}

@@ -259,9 +259,9 @@ class DatabaseBuilder:
 
         # Output path
         if Config.Database.CANONICAL_NAME:
-            out_name = "database.json"
+            out_name = "database_centroid.json"
         else:
-            out_name = f"database_perva_{self.dataset_split}.json"
+            out_name = f"database_centroid_perva_{self.dataset_split}.json"
         self.output_path = os.path.join(Config.Paths.DATABASE_DIR, out_name)
 
         # Lazy loaded

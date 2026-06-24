@@ -100,9 +100,18 @@ class Generator:
                     category = content.get("category", "object")
                     flux_prompt = f"A high-quality photograph of a {category}. The {category} is {target_context}."
                     print(f"   📝 NAIVE Prompt: {flux_prompt[:100]}...")
+                    # Fix per immagini identiche: rendiamo il seed dinamico basandoci sull'hash del concept_id
+                    current_seed = Config.Generate.SEED + abs(hash(concept_id)) % 10000
                 else:
+                    # FIX NameError: estraiamo 'info' dal JSON prima di passarlo al prompt builder
+                    attributes = content.get("info", {})
                     flux_prompt = build_flux_prompt(attributes, target_context)
                     print(f"   📝 FULL Prompt: {flux_prompt[:100]}...")
+                    # Usa il seed standard riproducibile
+                    current_seed = Config.Generate.SEED
+                
+                # Setup generatore con il seed corretto
+                generator = torch.Generator(device=self.device).manual_seed(current_seed)
                 
                 # Setup generatore per riproducibilità
                 generator = torch.Generator(device=self.device).manual_seed(Config.Generate.SEED)

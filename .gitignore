@@ -20,6 +20,7 @@ logs/
 # Evita di caricare GB di modelli su git
 output/
 checkpoints/
+output_dreambench/
 
 *.pth
 *.safetensors

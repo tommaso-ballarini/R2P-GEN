@@ -1,11 +1,11 @@
 # R2P-GEN: Retrieval and Reasoning for Personalization — Generative Edition
 
 <p align="center">
-  <a href="https://arxiv.org/abs/XXXX.XXXXX"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
   <img alt="FLUX.2" src="https://img.shields.io/badge/Generator-FLUX.2--klein--9B-orange">
   <img alt="Qwen3-VL" src="https://img.shields.io/badge/Reasoner-Qwen3--VL--8B-green">
+  <img alt="InternVL3.5" src="https://img.shields.io/badge/Judge-InternVL3.5-yellow">
 </p>
 
 ---

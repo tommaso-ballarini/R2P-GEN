@@ -12,7 +12,7 @@ import argparse
 from tqdm import tqdm
 
 from pipeline.prompts.dreambench_prompt_compiler import compile_subject_phrase, build_dreambench_prompt
-from pipeline.prompts.dreambench_prompts import get_prompts_for_entity_type
+from pipeline.prompts.dreambench_prompts import get_prompts_for_entity_type, is_property_modification_prompt
 from pipeline.refine import _generate_batch_http
 from config import Config
 
@@ -71,7 +71,15 @@ def run_dreambench_generation(database_path: str, output_dir: str, num_images_pe
         clean_concept_name = _sanitize_folder_name(concept_id)
         
         for prompt_idx, prompt_template in enumerate(prompts):
-            final_prompt = build_dreambench_prompt(prompt_template, subject_phrase)
+            # I prompt 20-24 sono property modification: il modificatore
+            # ("red", "cube shaped"...) deve restare attaccato al soggetto,
+            # quindi NON applichiamo la separazione fotografica.
+            is_prop_mod = is_property_modification_prompt(prompt_idx)
+            final_prompt = build_dreambench_prompt(
+                prompt_template,
+                subject_phrase,
+                is_property_modification=is_prop_mod,
+            )
             
             # Creiamo la directory di output per il prompt corrente
             # Struttura: output_dir/backpack_dog/00/

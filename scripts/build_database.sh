@@ -21,7 +21,7 @@ nvidia-smi | head -20
 echo "=========================================================="
 
 module purge
-module load profile/deeplrn
+#module load profile/deeplrn
 module load cuda/12.2
 module load cudnn
 
@@ -58,20 +58,22 @@ echo "---------------------"
 # 4. Build database (DEBUG_MODE=True, DEBUG_LIMIT=5 da config.py)
 # ===========================================================================
 echo "Avvio build database..."
-python -u pipeline/build_database_centroid.py \
+CONDA_PYTHON=/leonardo_work/IscrC_MUSE/tballari/envs/FM_env/bin/python
+$CONDA_PYTHON -u pipeline/build_database.py \
     --split train \
-    --debug 
+    --output database/database_textdriven.json
+
 
 # ===========================================================================
 # 5. Verifica output
 # ===========================================================================
 echo ""
 echo "--- Output check ---"
-if [ -f database/database.json ]; then
-    echo "✅ database/database.json creato"
+if [ -f database/database_textdriven.json ]; then
+    echo "✅ database/database_textdriven.json creato"
     python -c "
 import json
-with open('database/database.json') as f:
+with open('database/database_textdriven.json') as f:
     db = json.load(f)
 concepts = db.get('concept_dict', {})
 print(f'   Concetti: {len(concepts)}')
@@ -82,7 +84,7 @@ for cid, entry in list(concepts.items())[:2]:
     print(f'     info keys: {list(entry.get(\"info\", {}).keys())}')
 "
 else
-    echo "❌ database/database.json NON trovato"
+    echo "❌ database/database_textdriven.json NON trovato"
 fi
 
 echo "=========================================================="

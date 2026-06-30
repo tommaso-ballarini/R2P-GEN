@@ -1,5 +1,5 @@
 """
-prompts/dreambench_prompt_compiler.py
+pipeline/prompts/dreambench_prompt_compiler.py
 
 Prompt Compiler per la Fase 3 (DreamBench zero-shot).
 
@@ -12,13 +12,24 @@ Differenza principale rispetto a build_flux_prompt():
 - compile_subject_phrase() produce una NOUN PHRASE pulita, pensata per essere
   iniettata al posto di {0} nei prompt ufficiali DreamBench
   (es. "a {0} in the jungle" -> "a maroon backpack with colorful patches
-  on the front pocket in the jungle").
+  on the front pocket, photographed in the jungle").
 
 OPZIONE A (scelta concordata): nessun placeholder <concept_id> nella frase
 finale. Il VLM lo usa internamente per l'estrazione ("<backpack> is..."),
 ma qui viene sempre rimosso: FLUX deve ricevere solo linguaggio naturale,
 e per CLIP-T (Fase 4) un prompt "naturale" è l'unico comparabile con la
 letteratura.
+
+NOTE SU build_dreambench_prompt():
+- Prompt 0-19 (recontextualization / accessorization): la scena viene
+  separata dalla noun phrase con ", photographed <scene>". Questo impedisce
+  a FLUX di interpretare attributi di scena (es. "blue house", "Eiffel Tower")
+  come proprietà dell'oggetto (attribute bleeding).
+- Prompt 20-24 (property modification: "a red {0}", "a cube shaped {0}"...):
+  nessuna separazione — il modificatore deve restare attaccato al soggetto
+  perché è proprio ciò che il prompt chiede di cambiare.
+  Questi prompt vengono passati as-is con build_dreambench_prompt() usando
+  is_property_modification=True.
 """
 
 import re
@@ -155,12 +166,44 @@ def compile_subject_phrase(fingerprints: dict) -> str:
     return phrase
 
 
-def build_dreambench_prompt(template: str, subject_phrase: str) -> str:
+def build_dreambench_prompt(template: str, subject_phrase: str, is_property_modification: bool = False) -> str:
     """
-    Inietta la subject_phrase compilata nel template DreamBench (che usa {0}).
-    Mantiene minuscolo/spazi corretti; non aggiunge ulteriore punteggiatura.
+    Inietta la subject_phrase nel template DreamBench (che usa {0}).
+
+    Prompt 0-19 (recontextualization / accessorization):
+        Separa la noun phrase dalla scena con ", photographed <scene>".
+        Questo evita che FLUX interpreti attributi ambientali (es. "blue house",
+        "Eiffel Tower") come proprietà dell'oggetto (attribute bleeding).
+
+        Esempi:
+          "a {0} in the jungle"
+            -> "a <phrase>, photographed in the jungle"
+          "a {0} with the Eiffel Tower in the background"
+            -> "a <phrase>, photographed with the Eiffel Tower in the background"
+          "a {0} on top of pink fabric"
+            -> "a <phrase>, photographed on top of pink fabric"
+
+    Prompt 20-24 (property modification: "a red {0}", "a cube shaped {0}"...):
+        Nessuna separazione — il modificatore deve restare attaccato al soggetto
+        perché è esattamente ciò che il prompt chiede di alterare.
+        Passa is_property_modification=True per usare questo path.
+
+        Esempio:
+          "a red {0}" -> "a red <phrase>"
     """
-    return template.format(subject_phrase)
+    if is_property_modification:
+        # Inserimento diretto: il modificatore fa parte del soggetto
+        return template.format(subject_phrase)
+
+    # Split prefix / scene sul placeholder {0}
+    parts = template.split("{0}", 1)
+    prefix = parts[0].strip()          # tipicamente "a"
+    scene  = parts[1].strip() if len(parts) > 1 else ""
+
+    if not scene:
+        return f"{prefix} {subject_phrase}"
+
+    return f"{prefix} {subject_phrase}, photographed {scene}"
 
 
 # ==========================================
@@ -195,6 +238,27 @@ if __name__ == "__main__":
 
     print("OBJECT phrase:", obj_phrase)
     print("LIVING phrase:", live_phrase)
+    print()
 
-    print(build_dreambench_prompt("a {0} in the jungle", obj_phrase))
-    print(build_dreambench_prompt("a {0} wearing a red hat", live_phrase))
+    # Recontextualization (prompt 0-19) — usa separazione fotografica
+    recontex_templates = [
+        "a {0} in the jungle",
+        "a {0} on top of pink fabric",
+        "a {0} with a blue house in the background",
+        "a {0} with the Eiffel Tower in the background",
+    ]
+    print("--- Recontextualization ---")
+    for t in recontex_templates:
+        print(f"  {build_dreambench_prompt(t, obj_phrase)}")
+
+    print()
+
+    # Property modification (prompt 20-24) — inserimento diretto
+    property_templates = [
+        "a red {0}",
+        "a purple {0}",
+        "a cube shaped {0}",
+    ]
+    print("--- Property modification ---")
+    for t in property_templates:
+        print(f"  {build_dreambench_prompt(t, obj_phrase, is_property_modification=True)}")

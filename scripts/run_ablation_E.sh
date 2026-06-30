@@ -75,15 +75,13 @@ CUDA_VISIBLE_DEVICES=0 $CONDA_PYTHON -u flux_loop.py \
     --output   "$OUTPUT_DIR"
 
 REJECTED_PATH="$OUTPUT_DIR/rejected_concepts.json"
-# Usiamo il Python sicuro anche per questo controllo in linea
-REJECTED_COUNT=$($CONDA_PYTHON -c "
-import json, os
-if os.path.exists('$REJECTED_PATH'):
-    with open('$REJECTED_PATH') as f:
-        print(len(json.load(f)))
-else:
-    print(0)
-")
+
+if [ ! -f "$REJECTED_PATH" ]; then
+    echo "❌ CRASH RILEVATO: rejected_concepts.json non è stato generato dallo stage verify. Interruzione."
+    exit 1
+fi
+
+REJECTED_COUNT=$(python3 -c "import json; print(len(json.load(open('$REJECTED_PATH'))))")
 
 if [ "$REJECTED_COUNT" -eq 0 ]; then
     echo "   ✅ Tutti i concetti hanno passato il verify. Refine saltato."

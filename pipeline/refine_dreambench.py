@@ -170,14 +170,17 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
             state["_new_subject_phrase"] = new_subject_phrase
             state["_missing_before"]     = list(state["missing_details"])
 
-        print(f"      🚀 Invio batch FLUX: {len(prompts_batch)} immagini...")
-        batch_results = _generate_batch_http(
-            flux_url=FLUX_URL,
-            source_image_paths=sources_batch,
-            prompts=prompts_batch,
-            seeds=seeds_batch,
-            output_paths=paths_batch,
-        )
+        print(f"      🚀 Generazione FLUX: {len(prompts_batch)} immagini (una alla volta)...")
+        batch_results = []
+        for j in range(len(prompts_batch)):
+            res = _generate_batch_http(
+                flux_url=FLUX_URL,
+                source_image_paths=[sources_batch[j]],
+                prompts=[prompts_batch[j]],
+                seeds=[seeds_batch[j]],
+                output_paths=[paths_batch[j]],
+            )
+            batch_results.append(res[0])
 
         for i, composite_key in enumerate(keys_batch):
             state = states[composite_key]

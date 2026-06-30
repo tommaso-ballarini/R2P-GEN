@@ -1,5 +1,5 @@
 """
-dreambench_prompts.py
+pipeline/prompts/dreambench_prompts.py
 
 Prompt ufficiali del benchmark DreamBooth/DreamBench (Ruiz et al., 2022).
 25 prompt per gli OBJECT (20 recontextualization + 5 property modification)

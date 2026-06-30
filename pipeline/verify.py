@@ -30,6 +30,16 @@ def _extract_attributes_for_clip(fingerprints: dict) -> list:
     for key in keys_to_check:
         if key in fingerprints and fingerprints[key]:
             val = fingerprints[key]
+            
+            # --- INIZIO FIX ---
+            # Se 'val' è una lista (es. ['red', 'blue']), uniscila in una singola stringa separata da virgole
+            if isinstance(val, list):
+                val = ", ".join([str(v) for v in val])
+            # Se 'val' non è una stringa (es. un dizionario o un intero), forzalo a stringa
+            elif not isinstance(val, str):
+                val = str(val)
+            # --- FINE FIX ---
+
             if "no visible" in val.lower() or "none" in val.lower():
                 continue
             chunks = re.split(r'[;.]|\n', val)
@@ -52,7 +62,6 @@ def _extract_attributes_for_clip(fingerprints: dict) -> list:
                 seen.add(attr)
 
     return attributes
-
 
 def _resize(image: Image.Image, max_long_side: int) -> Image.Image:
     """

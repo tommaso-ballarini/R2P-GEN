@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:2
-#SBATCH --time=02:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/dreambench_test_e2e/%j.out
 #SBATCH --error=logs/dreambench_test_e2e/%j.err
 
@@ -84,8 +84,6 @@ echo "   Verifico R2P_PERVA_DATA: ${R2P_PERVA_DATA}"
 CUDA_VISIBLE_DEVICES=1 python -u pipeline/build_database_db.py \
     --data-dir "$R2P_PERVA_DATA" \
     --split test \
-    --debug \
-    --debug-limit 3
 
 # build_database_db.py salva sempre nello stesso path canonico
 # (database/database_db.json, vedi Config.Database.CANONICAL_NAME). Lo

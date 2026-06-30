@@ -572,7 +572,6 @@ def stage_refine(
     del clip_calculator
     cleanup_gpu()
 
-
 # ---------------------------------------------------------------------------
 # Stage 4 — Final Judge
 # ---------------------------------------------------------------------------
@@ -582,6 +581,22 @@ def stage_final_judge(database_path: str, output_dir: str) -> None:
 
     with open(database_path, "r", encoding="utf-8") as f:
         database = json.load(f)
+
+    # 1. Carichiamo i prompt originali
+    prompts_path = os.path.join(output_dir, "prompts.json")
+    generated_prompts = {}
+    if os.path.exists(prompts_path):
+        with open(prompts_path, "r", encoding="utf-8") as f:
+            generated_prompts = json.load(f)
+        print(f"   📖 File prompts.json caricato.")
+
+    # 2. Carichiamo i prompt curati dal Refine (se esiste il report)
+    recovery_path = os.path.join(output_dir, "recovery_results.json")
+    recovery_data = {}
+    if os.path.exists(recovery_path):
+        with open(recovery_path, "r", encoding="utf-8") as f:
+            recovery_data = json.load(f)
+        print(f"   🚑 File recovery_results.json caricato.")
 
     judge = FinalJudge(
         use_dino=True,
@@ -604,19 +619,34 @@ def stage_final_judge(database_path: str, output_dir: str) -> None:
 
         fingerprints = content.get("info", {})
 
+        # --- LOGICA DI SCELTA DEL PROMPT ---
+        actual_prompt = ""
+        # Partiamo dal prompt originale di generazione
+        if concept_id in generated_prompts:
+            actual_prompt = generated_prompts[concept_id].get("flux_prompt", "")
+        
+        # Se il concetto è passato per il refine ed è stato recuperato,
+        # usiamo il prompt riscritto da Qwen3!
+        if concept_id in recovery_data:
+            rec_status = recovery_data[concept_id].get("status")
+            rec_prompt = recovery_data[concept_id].get("last_rewritten_prompt")
+            if rec_status == "recovered" and rec_prompt:
+                actual_prompt = rec_prompt
+                print(f"   🔄 Uso prompt riscritto per {concept_id}")
+
         try:
             judge_eval = judge.evaluate(
                 generated_image=gen_image_path,
                 reference_image=ref_image_path,
                 fingerprints=fingerprints,
-                prompt=fingerprints.get("flux_prompt",
-                       fingerprints.get("sdxl_prompt", "")),
+                prompt=actual_prompt,  # Ora passiamo il prompt esatto!
             )
             results[concept_id] = judge_eval.to_dict()
             print(f"   ✅ {concept_id} | "
-                f"CLIP-I: {judge_eval.clip_i:.3f} | "
-                f"DINO-I: {judge_eval.dino_i:.3f} | "
-                f"TIFA: {judge_eval.tifa_score:.1%}")
+                  f"CLIP-I: {judge_eval.clip_i:.3f} | "
+                  f"DINO-I: {judge_eval.dino_i:.3f} | "
+                  f"CLIP-T: {judge_eval.clip_t:.3f} | "
+                  f"TIFA: {judge_eval.tifa_score:.1%}")
         except Exception as e:
             print(f"   ⚠️ Errore su {concept_id}: {e}")
 
@@ -626,8 +656,7 @@ def stage_final_judge(database_path: str, output_dir: str) -> None:
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=4)
     print(f"\n📁 Risultati finali → {results_path}")
-
-
+    
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------

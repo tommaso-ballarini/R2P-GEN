@@ -12,64 +12,32 @@
 
 ## Abstract
 
-**R2P-GEN** is a zero-shot, tuning-free framework for subject-driven Text-to-Image personalization. Existing adapter-based methods (e.g., IP-Adapter) suffer from *background entanglement* and *prompt override*, while parameter-update approaches (e.g., DreamBooth, LoRA) impose prohibitive computational costs at inference time. R2P-GEN addresses both limitations by coupling the native generative power of **FLUX.2** — leveraging its T5 text encoder for dense semantic binding — with the visual reasoning capabilities of **Multimodal Large Language Models (MLLMs)**. Subject identity is encoded entirely through structured textual fingerprints, eliminating any need for adapter modules or weight fine-tuning. A closed-loop, MLLM-guided refinement stage automatically recovers missing visual attributes through escalating prompt revision, and an isolated independent judge provides unbiased final evaluation.
+**R2P-GEN** is a zero-shot, tuning-free framework for subject-driven Text-to-Image personalization. Existing adapter-based methods (e.g., IP-Adapter) suffer from background entanglement and prompt override, while parameter-update approaches (e.g., DreamBooth, LoRA) impose prohibitive computational costs at inference time. Our method addresses both limitations by coupling the native generative power of **FLUX.2**, leveraging its T5 text encoder for dense semantic binding, with the visual reasoning capabilities of **Vision Language Models (VLMs)**. Subject identity is encoded entirely through structured textual fingerprints, eliminating any need for adapter modules or weight fine-tuning. A closed-loop, VLM-guided refinement stage automatically recovers missing visual attributes through escalating prompt revision, and an isolated independent judge provides unbiased final evaluation.
 
 ---
 
 ## Key Features
 
-- **Zero-Shot & Tuning-Free.** No adapter weights, no LoRA, no per-subject fine-tuning. The framework runs entirely at inference time.
-- **T5-Driven Dense Textual Anchoring.** Visual identity is encoded as structured natural language, exploiting the superior semantic binding capacity of the T5 encoder in FLUX.2.
-- **MLLM Visual Fingerprinting.** Qwen3-VL extracts fine-grained, distinctive attributes (logos, textures, typographic elements) from reference images into a structured JSON fingerprint database.
-- **Hierarchical Attribute Verification.** A two-phase verification module — CLIP quick-reject followed by logit-based MLLM sweep — detects missing attributes with continuous probability scores.
-- **Closed-Loop Escalating Refinement.** An automated recovery loop rewrites the generation prompt with increasing intensity (semantic emphasis → hard typographic anchors) and regenerates up to three times.
-- **Independent Final Judge.** A fully isolated MLLM (InternVL3.5) evaluates final outputs on CLIP-I, CLIP-T, DINO-I, and TIFA, preventing self-evaluation bias.
-- **Ablation-Ready.** Native flags (`--naive-prompt`, `--no-image-cond`) expose key design choices for controlled experimental comparison.
+- **Zero-Shot & Tuning-Free:** No adapter weights, no LoRA, no per-subject fine-tuning. The framework runs entirely at inference time.
+- **T5-Driven Dense Textual Anchoring:** Visual identity is encoded as structured natural language, exploiting the superior semantic binding capacity of the T5 encoder in FLUX.2.
+- **VLM Visual Fingerprinting:** Qwen3-VL extracts distinctive attributes (logos, textures, typographic elements) from reference images into a structured JSON database.
+- **Hierarchical Attribute Verification:** A two-phase verification module detects missing attributes with continuous probability scores.
+- **Closed-Loop Refinement:** An automated recovery loop rewrites the generation prompt with increasing intensity (semantic emphasis → hard typographic anchors) and regenerates up to three times.
+- **Independent Final Judge:** A fully isolated VLM (InternVL3.5) evaluates final outputs with Visual Question Answering (VQA), preventing self-evaluation bias.
 
 ---
 
 ## Pipeline Architecture
 
+## Pipeline Architecture
+
 R2P-GEN is a five-stage modular pipeline orchestrated by `flux_loop.py`.
 
-```
-Reference Image(s)
-       │
-       ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Stage 0 · Build Database          [build_database.py]          │
-│  CLIP-based view selection → Qwen3-VL fingerprint extraction    │
-│  Output: database/database.json                                 │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Stage 1 · Generate Only           [--stage generate_only]      │
-│  JSON fingerprints → Dense Textual Anchor → FLUX.2 Img2Img      │
-│  Output: output/{concept_id}_generated.png                      │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Stage 2 · Verify Base             [--stage verify_base]        │
-│  CLIP quick-reject → Qwen3-VL logit sweep → Worst-K detection  │
-│  Output: output/rejected_concepts.json                          │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │  (rejected concepts only)
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Stage 3 · Refine                  [--stage refine]             │
-│  Qwen3-VL prompt revision (escalating, ≤3 attempts)            │
-│  Output: output/recovery_results.json                           │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Stage 4 · Final Judge             [--stage final_judge]        │
-│  InternVL3.5 evaluation: CLIP-I · CLIP-T · DINO-I · TIFA       │
-│  Output: output/final_judge_results.json                        │
-└─────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="diagram_architecture.png" alt="R2P-GEN Architecture Diagram" width="100%">
+</p>
+
+### Stage Details
 
 ### Stage Details
 

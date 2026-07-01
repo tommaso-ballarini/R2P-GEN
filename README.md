@@ -29,8 +29,6 @@
 
 ## Pipeline Architecture
 
-## Pipeline Architecture
-
 R2P-GEN is a five-stage modular pipeline orchestrated by `flux_loop.py`.
 
 <p align="center">
@@ -39,52 +37,48 @@ R2P-GEN is a five-stage modular pipeline orchestrated by `flux_loop.py`.
 
 ### Stage Details
 
-### Stage Details
+**1. FINGERPRINTS EXTRACTION**
+* **Stage 0. Build Database (`pipeline/build_database.py`):** Processes a subject dataset (PerVA or DreamBench). A text-driven semantic view selection step via CLIP discards noisy views to find the reference image. Qwen3-VL then extracts structured visual fingerprints (logos, textures, typography) and serializes them into `database/database.json`.
 
-**Stage 0: Build Database.** Processes a subject dataset (PerVA or DreamBench). A Text-Driven Semantic View Selection step, guided by CLIP, discards noisy or ambiguous views and identifies the single most canonical reference image per subject. Qwen3-VL then extracts structured visual fingerprints — capturing distinctive attributes such as logos, textures, typography, and color patterns — and serializes them into a JSON database.
+**2. GENERATION**
+* **Stage 1. Generation (`pipeline/generate.py`):** The JSON fingerprints are translated into a dense Textual Anchor. This anchor and the reference image are passed to FLUX.2-klein-9B in Image-to-Image mode (4 inference steps) to generate the personalized subject without any external adapters.
 
-**Stage 1: Generate Only.** The JSON fingerprints are programmatically translated into a Dense Textual Anchor. This anchor, together with the reference image, is passed to FLUX.2-klein-9B operating in Image-to-Image mode (4 inference steps) to generate the subject in a novel context. No external adapter modules are used.
-
-**Stage 2: Verify Base.** Each generated image undergoes hierarchical attribute verification. A lightweight CLIP-based quick-reject filters obviously failing generations. Passing images are then subjected to a Logit-Based MLLM Sweep: Qwen3-VL extracts per-token logits to compute a continuous presence probability for each fingerprint attribute. A **Worst-K Detection** policy flags any image where even a single critical attribute is catastrophically absent, routing it to the refinement stage.
-
-**Stage 3: Refine.** Rejected images enter a closed recovery loop (maximum 3 iterations). Qwen3-VL acts as an automated Prompt Engineer, applying an **Escalating Prompt Revision** strategy: initial iterations apply semantic emphasis; subsequent iterations escalate to hard typographic anchors (UPPERCASE tokens) for attributes that remain unresolved. Each revised prompt triggers a new generation and verification pass.
-
-**Stage 4: Final Judge.** To eliminate self-evaluation bias, the final assessment is performed by an entirely separate and isolated model, InternVL3.5-8B, which was not involved in any prior stage. It computes CLIP-I (global identity similarity), CLIP-T (text-image alignment), DINO-I via DINOv2 (fine-grained structural fidelity), and a VQA-based TIFA Score (exact attribute verification).
+**3. REFINE LOOP AND JUDGE**
+* **Stage 2. Verify Base (`pipeline/verify.py`):** Hierarchical attribute verification. A CLIP quick-reject filters catastrophic failures, followed by a Qwen3-VL logit-based sweep to compute a continuous probability for each attribute. A *Worst-K Detection* policy flags missing features.
+* **Stage 3. Refine (`pipeline/refine.py`):** Rejected images enter a closed recovery loop. Qwen3-VL acts as an automated Prompt Engineer, applying an *Escalating Prompt Revision* strategy (semantic emphasis → hard typographic anchors) and regenerates the image up to 3 times.
+* **Stage 4. Final Judge (`pipeline/judge`, `pipeline/metrics`):** To eliminate self-evaluation bias, InternVL3.5-8B evaluates the final outputs using CLIP-I (global identity similarity), CLIP-T (text-image alignment), DINO-I via DINOv2 (fine-grained structural fidelity), and a VQA-based TIFA Score (exact attribute verification).
 
 ---
 
 ## Repository Structure
 
-```
+```text
 R2P-GEN/
-├── pipeline/               # Core pipeline modules
-│   ├── generate.py         # Stage 1: FLUX.2 image generation
-│   ├── verify.py           # Stage 2: hierarchical attribute verification
-│   ├── refine.py           # Stage 3: closed-loop prompt revision
-│   ├── judge.py            # Stage 4: final independent evaluation
-│   ├── prompts/            # Prompt templates (flux_prompts.py, etc.)
-│   └── r2p_tools.py        # Shared utilities (CLIP scorer, etc.)
-├── r2p_core/               # Core model wrappers
-│   ├── evaluators/         # CLIP, DINOv2 evaluator classes
-│   ├── models/             # Qwen3-VL reasoning interface
-│   └── utils/              # GPU cleanup, I/O helpers
-├── scripts/                # Slurm cluster scripts
-│   ├── run_full_e2e.sh     # End-to-end pipeline run
-│   └── ablation_*.sh       # Ablation study scripts
-├── data/                   # Dataset directory (user-provided)
-├── database/               # Generated fingerprint databases
-├── output/                 # Generated images and evaluation results
-├── archive/                # Experimental/archived code
-├── metrics/                # Metric computation utilities
-├── build_database.py       # Stage 0: fingerprint database construction
-├── flux_loop.py            # Main pipeline orchestrator
-├── flux_server.py          # Background HTTP server for FLUX in VRAM
-├── config.py               # Centralized configuration
-├── prepare_dreambench.py   # DreamBench dataset preparation utility
-├── analyze_judge_scores.py # Score analysis and dashboard utilities
-├── requirements.txt        # Standard Python dependencies
-├── requirements_cluster.txt# Cluster-specific dependencies
-└── .env                    # Environment variable overrides (not tracked)
+├── flux_loop.py               # Main orchestrator for Stages 1-4
+├── flux_server.py             # HTTP server to keep FLUX.2 resident in VRAM
+├── config.py                  # Centralized configuration and model paths
+├── pipeline/                  # Core pipeline modules
+│   ├── build_database.py      # Stage 0 logic (fingerprinting)
+│   ├── generate.py            # Stage 1 logic (FLUX inference)
+│   ├── verify.py              # Stage 2 logic (CLIP/Qwen verification)
+│   ├── refine.py              # Stage 3 logic (Prompt rewriting)
+│   ├── judge.py               # Stage 4 logic (InternVL metrics)
+│   ├── prompts/               # Prompt templates (flux_prompts.py, etc.)
+│   ├── metrics.py             # Metric computation utilities
+│   └── r2p_tools.py           # Shared utilities
+├── r2p_core/                  # Underlying model wrappers
+│   ├── evaluators/            # Confidence calculation logic
+│   ├── models/                # Qwen3-VL and InternVL interface logic
+│   └── utils/                 # Helpers
+├── scripts/                   # Slurm cluster scripts for large-scale runs
+│   ├── run_full_e2e.sh        # End-to-end pipeline run (All Stages)
+│   ├── run_dreambench.sh      # DreamBench specific execution
+│   └── run_ablation_*.sh      # Scripts for ablation studies
+├── database/                  # Output directory for JSON databases
+├── output/                    # Output directory for generated images
+├── requeriments_cluster.txt   # Python depencecies for cluster dependencies
+└── requirements.txt           # Python dependencies
+
 ```
 
 ---

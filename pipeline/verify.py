@@ -21,10 +21,33 @@ from pipeline.r2p_tools import ClipScoreCalculator
 # HELPER FUNCTIONS
 # =============================================================================
 
+# Chiavi storiche, usate per i fingerprint OBJECT (e per qualsiasi fingerprint
+# senza "_entity_type" esplicito, cioè i vecchi dataset di ablation).
+# NON TOCCARE: deve restare identica per non rompere run passate.
+_KEYS_OBJECT = ['distinct features', 'brand/text', 'pattern', 'material', 'color']
+
+# Chiavi per i fingerprint LIVING (schema introdotto con DreamBench).
+# Usate SOLO quando fingerprints["_entity_type"] == "LIVING" esplicitamente.
+_KEYS_LIVING = ['distinctive_markings', 'facial_features', 'coat_and_color', 'accessories']
+
+
 def _extract_attributes_for_clip(fingerprints: dict) -> list:
-    """Extract clean attributes in priority order for CLIP scoring."""
+    """Extract clean attributes in priority order for CLIP scoring.
+
+    Retrocompatibilità: se "_entity_type" non è presente nel fingerprint
+    (vecchi dataset di ablation, solo OBJECT) il comportamento è identico
+    a prima di questa modifica — si usa SEMPRE _KEYS_OBJECT.
+    Le chiavi LIVING vengono usate solo se "_entity_type" == "LIVING" è
+    esplicitamente dichiarato nel fingerprint (schema DreamBench).
+    """
     attributes = []
-    keys_to_check = ['distinct features', 'brand/text', 'pattern', 'material', 'color']
+
+    entity_type = fingerprints.get("_entity_type")  # None se assente (vecchi dataset)
+    if entity_type == "LIVING":
+        keys_to_check = _KEYS_LIVING
+    else:
+        keys_to_check = _KEYS_OBJECT
+
     seen = set()
 
     for key in keys_to_check:

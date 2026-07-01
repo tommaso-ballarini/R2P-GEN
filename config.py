@@ -114,6 +114,18 @@ class Config:
 
         DINO_MODEL = "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface/dinov2-large"
 
+        # === Metriche ufficiali DreamBench (Fase 4) — checkpoint allineati al paper ===
+        #different from the models used in original pipeline, but they are the ones used in the DreamBench paper
+        CLIP_DREAMBENCH_MODEL = os.path.join(
+            "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface",
+            "hub/models--openai--clip-vit-base-patch32/snapshots/3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268"
+        )
+        
+        DINO_DREAMBENCH_MODEL = os.path.join(
+            "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface",
+            "hub/models--facebook--dino-vits16/snapshots/abe3b354cb6a9b6f146096b14a4a9d7eecbcb4bd"
+        )
+    
     # ========================================================================
     # GPU CONFIGURATION
     # ========================================================================

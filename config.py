@@ -78,8 +78,8 @@ class Config:
         """
         All models used in the R2P-GEN pipeline (reasoner, judge, FLUX, CLIP, DINO).
 
-        In cluster mode: imposta R2P_MODELS_BASE nel SLURM script o .bashrc.
-        In locale: i repo_id vengono scaricati automaticamente da HuggingFace.
+        In cluster mode: set R2P_MODELS_BASE in SLURM script o .bashrc.
+        In local mode: repo_id are automatically downloaded from HuggingFace.
         """
 
         # --- flux_loop.py reasoner (Qwen3-VL) ---
@@ -114,8 +114,8 @@ class Config:
 
         DINO_MODEL = "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface/dinov2-large"
 
-        # === Metriche ufficiali DreamBench (Fase 4) — checkpoint allineati al paper ===
-        #different from the models used in original pipeline, but they are the ones used in the DreamBench paper
+        # === Official DreamBench metrics ===
+        # different from the models used in original pipeline, but they are the ones used in the DreamBench paper
         CLIP_DREAMBENCH_MODEL = os.path.join(
             "/leonardo_work/IscrC_MUSE/tballari/models_cache/huggingface",
             "hub/models--openai--clip-vit-base-patch32/snapshots/3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268"
@@ -142,7 +142,7 @@ class Config:
     class Generate:
         """Configuration for pipeline/generate.py"""
         NUM_INFERENCE_STEPS = 4
-        GUIDANCE_SCALE = 7.5
+        GUIDANCE_SCALE = 7.5 #NOT IN USE WITH FLUX.2 --> GUIDANCE SCALE IS SET TO 0.0
         SEED = 42
 
         # Options: "white", "wooden_table", "gradient", "neutral", "none"
@@ -180,7 +180,7 @@ class Config:
     # ========================================================================
     class Paths:
         """Directory paths (auto-adjusted for cluster mode)."""
-        # Usa variabili di modulo — stesso motivo del fix BuildDatabase
+
         OUTPUT_DIR = os.environ.get("R2P_OUTPUT_DIR", os.path.join(_BASE_DIR, "output")) if _CLUSTER_MODE else "output"
         DATASET_DIR  = os.path.join(_DATA_BASE, "perva-data") if _CLUSTER_MODE else "data/perva-data"
         DATABASE_DIR = os.path.join(_BASE_DIR, "database") if _CLUSTER_MODE else "database"
@@ -188,6 +188,7 @@ class Config:
     # ========================================================================
     # BACKWARD COMPATIBILITY ALIASES
     # ========================================================================
+    
     DEVICE          = GPU.DEVICE
     USE_FP16        = GPU.USE_FP16
     TARGET_ACCURACY = Refine.TARGET_ACCURACY
@@ -196,6 +197,7 @@ class Config:
     # ========================================================================
     # HELPER METHODS
     # ========================================================================
+    
     @classmethod
     def get_background_template(cls) -> str:
         """Get the current background template string."""
@@ -206,7 +208,7 @@ class Config:
 
     @classmethod
     def print_summary(cls) -> None:
-        """Stampa un riepilogo della configurazione attiva."""
+        """Log the current configuration settings to the console."""
         print("=" * 60)
         print("R2P-GEN Config Summary")
         print("=" * 60)

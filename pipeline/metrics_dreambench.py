@@ -1,20 +1,13 @@
 """
 pipeline/metrics_dreambench.py
 
-Metriche ufficiali per la Fase 4 (tabella del paper), DELIBERATAMENTE
-separate da pipeline/r2p_tools.py::ClipScoreCalculator (usato nel
-recovery loop di verify/refine) e da pipeline/metrics.py::MetricsCalculator
-(usato per altri scopi interni, es. ablation).
+Metrics used in the DreamBench paper (CLIP-I, CLIP-T, DINO-I) for the official benchmark table.
 
-Motivo della separazione: il recovery loop usa clip-vit-large-patch14-336
-con un attribute-score per-fingerprint (non è CLIP-I/CLIP-T in senso
-stretto). Qui invece replichiamo ESATTAMENTE il protocollo DreamBooth/
-DreamBench:
+We replicate the original DreamBench protocol exactly, using the official checkpoints:
     - CLIP-I / CLIP-T: openai/clip-vit-base-patch32
-    - DINO:            facebook/dino-vits16 
-calcolati come similarity diretta image-image (CLIP-I, DINO) o
-image-text (CLIP-T), media pairwise su TUTTE le immagini reali del
-soggetto (non una sola reference), come da paper originale.
+    - DINO:            facebook/dino-vits16
+calculated as direct image-image (CLIP-I, DINO) or image-text (CLIP-T) similarity, averaged pairwise 
+over ALL real images of the subject (not just a single reference), as per the original paper.
 """
 
 import os
@@ -39,9 +32,8 @@ def _load_image(img: Union[str, Image.Image]) -> Image.Image:
 
 
 class ClipDreamBench:
-    """CLIP-I e CLIP-T col checkpoint ufficiale ViT-B/32 (ImageNet-style
-    cosine similarity diretta, NESSUN attribute-score, NESSUNA logica
-    di accept/reject — solo numeri da riportare in tabella)."""
+    """CLIP-I and CLIP-T with the official ViT-B/32 checkpoint (ImageNet-style
+    direct cosine similarity, NO attribute-score, NO accept/reject logic — just numbers to report in the table)."""
 
     def __init__(self, device: str = "cuda"):
         self.device = device
@@ -67,8 +59,8 @@ class ClipDreamBench:
         return F.normalize(feats, p=2, dim=-1)
 
     def clip_i(self, gen_image: Union[str, Image.Image], real_images: List[str]) -> float:
-        """Media pairwise tra l'immagine generata e TUTTE le immagini reali
-        del soggetto (protocollo ufficiale, non una sola reference)."""
+        """Pairwise mean between the generated image and ALL real images
+        of the subject (official protocol, not just a single reference)."""
         gen_feat = self._image_features(gen_image)
         sims = []
         for real_path in real_images:
@@ -88,16 +80,11 @@ class ClipDreamBench:
 
 
 class DinoDreamBench:
-    """DINO-I col checkpoint ORIGINALE del paper DreamBooth: DINOv1 ViT-S/16
-    (facebook/dino-vits16, Caron et al. 2021). Stesso checkpoint usato in
-    BLIP-Diffusion, ComFusion, DreamMatcher e nella stragrande maggioranza
-    della letteratura subject-driven generation comparabile.
-
-    NB: architettura ViT "vanilla" di transformers, NON Dinov2Model — va
-    caricata con ViTModel/ViTImageProcessor, non con AutoModel/AutoImageProcessor
-    (che per un repo facebook/dino-vits16 caricherebbero comunque la classe
-    giusta in automatico, ma qui siamo espliciti per evitare ambiguità se in
-    futuro si volesse swappare con una variante DINOv2)."""
+    """DINO-I with the original checkpoint from the DreamBooth paper: DINOv1 ViT-S/16
+    (facebook/dino-vits16, Caron et al. 2021). The same checkpoint used in
+    BLIP-Diffusion, ComFusion, DreamMatcher and in the vast majority
+    of subject-driven generation literature.
+    """
 
     def __init__(self, device: str = "cuda"):
         self.device = device

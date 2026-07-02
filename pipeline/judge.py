@@ -10,18 +10,6 @@ Final evaluation with:
 1. VQA-based attribute verification (TIFA-style) with InternVL3_5-8B
 2. Quantitative metrics (CLIP-I, CLIP-T, DINO-I)
 3. Final aggregated score with interpretable breakdown
-
-Usage:
-    from pipeline.judge import FinalJudge
-
-    judge = FinalJudge()  # Uses InternVL3_5-8B (different from MiniCPM/Qwen3!)
-    result = judge.evaluate(
-        generated_image="output/generated.png",
-        reference_image="data/target.jpg",
-        fingerprints={"color": "blue", "material": "leather", ...},
-        prompt="(blue leather bag:1.3), ..."
-    )
-    print(f"Final Score: {result.final_score:.2%}")
 """
 
 import os

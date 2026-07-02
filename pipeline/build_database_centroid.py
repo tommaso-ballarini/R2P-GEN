@@ -144,7 +144,6 @@ def _parse_json_response(raw: str) -> dict:
     # Remove markdown fences
     cleaned = raw.strip().strip("```json").strip("```").strip()
 
-    # Estrai solo il blocco JSON se c'è testo extra
     match = re.search(r'\{.*\}', cleaned, re.DOTALL)
     if match:
         cleaned = match.group(0)
@@ -219,7 +218,7 @@ class DatabaseBuilder:
     """
     Builds the fingerprints database for R2P-GEN.
 
-    Per ogni concept:
+    For each concept:
     1. Select the representative image (CLIP centroid)
       2. Extracts fingerprints with Qwen3-VL
         3. Save in database.json (including the representative image path,
@@ -398,7 +397,7 @@ class DatabaseBuilder:
             dict with success_count, total_concepts, database_path
         """
         print("\n" + "="*70)
-        print("BUILD DATABASE — R2P-GEN FLUX Edition")
+        print("BUILD DATABASE - R2P-GEN FLUX Edition")
         print("="*70)
         Config.print_summary()
         print(f"  perva-data   : {self.perva_data_dir}")

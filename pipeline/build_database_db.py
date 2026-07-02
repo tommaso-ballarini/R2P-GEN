@@ -1,9 +1,9 @@
 """
 pipeline/build_database_db.py (CENTROID VARIANT)
 
-Costruisce il database dei concept estraendo i fingerprint JSON.
-Usa una logica a Centroide (Image-to-Image) tramite CLIP per trovare
-l'immagine più rappresentativa di un concept.
+Builds the concept database by extracting JSON fingerprints.
+Uses a Centroid logic (Image-to-Image) via CLIP to find the most representative image of a concept.
+
 """
 
 import os
@@ -57,7 +57,7 @@ _JSON_SCHEMA_LIVING = {
 }
 
 def _build_classification_message(image: Image.Image) -> list:
-    """Step 1: Classifica se il soggetto è un essere vivente o un oggetto."""
+    """Step 1: Classify if subject is a living being or an inanimate object."""
     question = (
         "Look at the main entity in this image.\n"
         "Is it a living being (like an animal, dog, cat) or an inanimate object (like a backpack, can, toy)?\n"
@@ -76,8 +76,8 @@ def _build_extraction_messages(
     subject_name: str,
     entity_type: str
 ) -> list:
-    """Step 2: Estrae i fingerprint usando lo schema corretto isolando il soggetto."""
-    
+    """Step 2: Extract fingerprints using the correct schema isolating the subject."""
+
     if entity_type == "LIVING":
         schema = _JSON_SCHEMA_LIVING
         entity_desc = "living being (animal)"
@@ -121,8 +121,8 @@ def _parse_json_response(raw: str) -> dict:
 
 class _CentroidCLIPSelector:
     """
-    Seleziona l'immagine più rappresentativa calcolando il centroide (media)
-    degli embedding visivi di tutte le immagini e trovando quella più vicina.
+    Selects the most representative image by calculating the centroid (mean)
+    of the visual embeddings of all images and finding the one closest to it.
     """
 
     def __init__(self, device: str = "cuda"):
@@ -135,44 +135,44 @@ class _CentroidCLIPSelector:
     @torch.no_grad()
     def select(self, image_paths: list[str], k: int = 3) -> list[str]:
         """
-        Ritorna le Top-K immagini più vicine al centroide del concept.
+        Returns the Top-K images closest to the centroid of the concept.
         """
         if len(image_paths) == 1:
             return [image_paths[0]]
 
-        # 1. Carica solo le immagini (Niente testo)
+        # 1. Load only the images (No text)
         images = [Image.open(p).convert("RGB") for p in image_paths]
         
-        # 2. Estrai gli embedding visivi
+        # 2. Extract visual embeddings
         inputs = self.processor(images=images, return_tensors="pt", padding=True)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         outputs = self.model.get_image_features(**inputs)
 
-        # get_image_features() può restituire un tensore o un oggetto
-        # a seconda della versione di transformers installata
+        # get_image_features() can return a tensor or an object
+        # depending on the version of transformers installed
         if hasattr(outputs, 'image_embeds'):
             image_embeds = outputs.image_embeds
         elif hasattr(outputs, 'pooler_output'):
             image_embeds = outputs.pooler_output
         else:
-            image_embeds = outputs  # già un tensore, versioni più vecchie
+            image_embeds = outputs  
         
-        # 3. Normalizza le feature individuali
+        # 3. Normalize the embeddings to unit length
         import torch.nn.functional as F
         image_embeds = F.normalize(image_embeds, p=2, dim=-1)
 
-        # 4. Calcola il CENTROIDE (Media lungo la dimensione 0) e normalizzalo
+        # 4. Calculate the CENTROID (Mean along dimension 0) and normalize it
         centroid = image_embeds.mean(dim=0, keepdim=True)
         centroid = F.normalize(centroid, p=2, dim=-1)
 
-        # 5. Calcola la Cosine Similarity tra tutte le immagini e il centroide
+        # 5. Calculate the Cosine Similarity between all images and the centroid
         similarities = (image_embeds @ centroid.T).squeeze(-1)
         
         if similarities.dim() == 0:
             return [image_paths[0]]
 
-        # 6. Seleziona le Top-K
+        # 6. Select the Top-K
         actual_k = min(k, len(image_paths))
         top_scores, top_indices = torch.topk(similarities, k=actual_k)
 
@@ -250,7 +250,7 @@ class DatabaseBuilder:
         print(f"   🔍 perva-data: {abs_path}")
 
         if not os.path.exists(abs_path):
-            print(f"   ❌ Directory non trovata: {abs_path}")
+            print(f"   ❌ Directory not found: {abs_path}")
             return []
 
         splits = ["train", "test"] if self.dataset_split == "all" else [self.dataset_split]
@@ -292,7 +292,7 @@ class DatabaseBuilder:
         return concepts
 
     def _extract_fingerprints(self, image, category, concept_id):
-        # --- STEP 1: Classificazione Binaria ---
+        # --- STEP 1: Binary Classification ---
         class_msgs = _build_classification_message(image)
         class_output = self.reasoner.model_interface.chat(class_msgs)
         
@@ -304,7 +304,7 @@ class DatabaseBuilder:
         is_living = "LIVING" in raw_class.upper()
         entity_type = "LIVING" if is_living else "OBJECT"
 
-        # --- STEP 2: Estrazione JSON ---
+        # --- STEP 2: JSON Extraction ---
         extract_msgs = _build_extraction_messages(image, category, category, entity_type)
         extract_output = self.reasoner.model_interface.chat(extract_msgs)
         
@@ -320,15 +320,15 @@ class DatabaseBuilder:
 
     def _process_concept(self, concept_data: dict) -> tuple[str, dict]:
         """
-        Processa un singolo concept usando il Centroid Selector.
+        Process a single concept using the Centroid Selector.
         """
         category   = concept_data["category"]
         concept_id = concept_data["concept_id"]
         images     = concept_data["images"]
 
-        # 1. Selezione immagini Top-K guidata dal Centroide (Image-to-Image)
+        # 1. Top-K image selection guided by the Centroid (Image-to-Image)
         if self.use_centroid_sel and self.centroid_selector is not None:
-            # Nota: Non passiamo più la "category", non serve al centroide
+            # Note: We no longer pass the "category", as it's not needed by the centroid
             top_k_images = self.centroid_selector.select(images, k=3)
             representative = top_k_images[0]
         else:
@@ -352,7 +352,7 @@ class DatabaseBuilder:
 
     def build(self) -> dict:
         print("\n" + "="*70)
-        print("BUILD DATABASE — R2P-GEN FLUX Edition (CENTROID VARIANT)")
+        print("BUILD DATABASE - R2P-GEN FLUX Edition (CENTROID VARIANT)")
         print("="*70)
         Config.print_summary()
         
@@ -366,14 +366,14 @@ class DatabaseBuilder:
         print("[1/3] Discovering concepts...")
         all_concepts = self._get_concepts()
         if not all_concepts:
-            print("❌ Nessun concept trovato. Controlla R2P_PERVA_DATA.")
+            print("❌ No concepts found. Check R2P_PERVA_DATA.")
             return {"success_count": 0, "total_concepts": 0}
 
-        print(f"   Trovati {len(all_concepts)} concepts.")
+        print(f"   Found {len(all_concepts)} concepts.")
 
         if self.debug_mode:
             all_concepts = all_concepts[:self.debug_limit]
-            print(f"   DEBUG MODE: processing solo {len(all_concepts)} concepts.")
+            print(f"   DEBUG MODE: processing only {len(all_concepts)} concepts.")
 
         print("\n[2/3] Extracting fingerprints (Qwen3-VL)...")
         success = 0
@@ -386,7 +386,7 @@ class DatabaseBuilder:
                 success += 1
             except Exception as e:
                 cid = concept_data.get("concept_id", "?")
-                print(f"\n   ⚠️  Errore su '{cid}': {e}")
+                print(f"\n   ⚠️  Error on '{cid}': {e}")
                 continue
 
         print(f"\n[3/3] Saving database → {self.output_path}")
@@ -394,7 +394,7 @@ class DatabaseBuilder:
         with open(self.output_path, "w", encoding="utf-8") as f:
             json.dump(self._database, f, indent=4, ensure_ascii=False)
 
-        print(f"\n✅ Done! {success}/{len(all_concepts)} concepts processati.")
+        print(f"\n✅ Done! {success}/{len(all_concepts)} concepts processed.")
         print(f"   Database: {os.path.abspath(self.output_path)}")
 
         if self._reasoner is not None:
@@ -421,11 +421,11 @@ if __name__ == "__main__":
                         choices=["train", "test", "all"],
                         help="Dataset split")
     parser.add_argument("--debug",       action="store_true", default=None,
-                        help="Debug mode: processa solo i primi N concepts")
+                        help="Debug mode: process only the first N concepts")
     parser.add_argument("--debug-limit", type=int, default=None,
-                        help="Numero concepts in debug mode")
+                        help="Number of concepts in debug mode")
     parser.add_argument("--no-centroid", action="store_true",
-                        help="Disabilita la logica a Centroide (prende semplicemente la prima immagine)")
+                        help="Disable the centroid logic (simply takes the first image)")
     args = parser.parse_args()
 
     builder = DatabaseBuilder(

@@ -1,42 +1,24 @@
 """
 pipeline/prompts/dreambench_prompt_compiler.py
 
-Prompt Compiler per la Fase 3 (DreamBench zero-shot).
+Prompt Compiler for Phase 3 (DreamBench zero-shot).
 
-Riusa le STESSE convenzioni già adottate in pipeline/prompts/flux_prompts.py
-(_DETAIL_TEMPLATES, _EXCLUDED_KEYS, _NEGATIVE_TRIGGERS, fallback generico)
-per minimizzare le differenze di stile tra i due moduli.
 
-Differenza principale rispetto a build_flux_prompt():
-- build_flux_prompt() produce un PARAGRAFO ("A high-quality photograph of...").
-- compile_subject_phrase() produce una NOUN PHRASE pulita, pensata per essere
-  iniettata al posto di {0} nei prompt ufficiali DreamBench
-  (es. "a {0} in the jungle" -> "a maroon backpack with colorful patches
-  on the front pocket, photographed in the jungle").
-
-OPZIONE A (scelta concordata): nessun placeholder <concept_id> nella frase
-finale. Il VLM lo usa internamente per l'estrazione ("<backpack> is..."),
-ma qui viene sempre rimosso: FLUX deve ricevere solo linguaggio naturale,
-e per CLIP-T (Fase 4) un prompt "naturale" è l'unico comparabile con la
-letteratura.
-
-NOTE SU build_dreambench_prompt():
-- Prompt 0-19 (recontextualization / accessorization): la scena viene
-  separata dalla noun phrase con ", photographed <scene>". Questo impedisce
-  a FLUX di interpretare attributi di scena (es. "blue house", "Eiffel Tower")
-  come proprietà dell'oggetto (attribute bleeding).
-- Prompt 20-24 (property modification: "a red {0}", "a cube shaped {0}"...):
-  nessuna separazione — il modificatore deve restare attaccato al soggetto
-  perché è proprio ciò che il prompt chiede di cambiare.
-  Questi prompt vengono passati as-is con build_dreambench_prompt() usando
-  is_property_modification=True.
+build_dreambench_prompt():
+- Prompt 0-19 (recontextualization / accessorization): the scene
+  is separated from the noun phrase with ", photographed <scene>". This prevents
+  FLUX from interpreting scene attributes (e.g., "blue house", "Eiffel Tower") as 
+  properties of the object (attribute bleeding).
+- Prompt 20-24 (property modification: "a red {0}", "a cube
+    shaped {0}"...): no separation — the modifier must remain attached to the subject
+    because it is exactly what the prompt asks to change. These prompts are passed as-is
+    with build_dreambench_prompt() using is_property_modification=True.  
 """
 
 import re
 
 # ---------------------------------------------------------------------------
-# Mapping chiave grezza -> frase naturale (OBJECT)
-# Identico a flux_prompts.py, per coerenza di stile.
+# Mapping key for OBJECTS
 # ---------------------------------------------------------------------------
 
 _DETAIL_TEMPLATES_OBJECT = {
@@ -47,8 +29,7 @@ _DETAIL_TEMPLATES_OBJECT = {
 }
 
 # ---------------------------------------------------------------------------
-# Mapping chiave grezza -> frase naturale (LIVING)
-# Stesso pattern, nuove chiavi per il secondo schema (animali).
+# Mapping key for ANIMALS / LIVING
 # ---------------------------------------------------------------------------
 
 _DETAIL_TEMPLATES_LIVING = {
@@ -58,18 +39,14 @@ _DETAIL_TEMPLATES_LIVING = {
     "accessories":          "wearing {value}",
 }
 
-# Chiavi già usate nel "soggetto principale" (non vanno ripetute nei dettagli)
 _EXCLUDED_KEYS_OBJECT = {"category", "color", "material", "general", "sdxl_prompt", "_entity_type"}
 _EXCLUDED_KEYS_LIVING = {"category", "species_and_breed", "general", "sdxl_prompt", "_entity_type"}
 
-# Stessi trigger negativi di flux_prompts.py
 _NEGATIVE_TRIGGERS = [
     "no visible", "none", "n/a", "not readable",
     "unknown", "no brand", "no text",
 ]
 
-# Pattern per rimuovere qualsiasi placeholder <concept_id> residuo
-# (Opzione A: non deve mai arrivare a FLUX)
 _CONCEPT_TAG_RE = re.compile(r"<[^<>]+>\s*")
 
 
@@ -82,18 +59,17 @@ def _format_detail(key: str, value: str, templates: dict) -> str:
     template = templates.get(key)
     if template:
         return template.format(value=value)
-    # stesso fallback generico di flux_prompts.py
     return f"with {value}"
 
 
 def _strip_concept_tag(text: str) -> str:
-    """Rimuove ogni occorrenza di <concept_id> e normalizza gli spazi."""
+    """Remove every occurrence of <concept_id> and normalize the spaces."""
     cleaned = _CONCEPT_TAG_RE.sub("", text)
     return " ".join(cleaned.split())
 
 
 # ---------------------------------------------------------------------------
-# Compilatori per categoria (OBJECT / LIVING)
+# Compilators per category (OBJECT / LIVING)
 # ---------------------------------------------------------------------------
 
 def _compile_object_phrase(attributes: dict) -> str:
@@ -120,10 +96,8 @@ def _compile_object_phrase(attributes: dict) -> str:
 
 
 def _compile_living_phrase(attributes: dict) -> str:
-    # species_and_breed es. "Dog, Shiba Inu" -> usato come soggetto principale
     species = attributes.get("species_and_breed") or attributes.get("category", "animal")
     species = _strip_concept_tag(species)
-    # normalizza "Dog, Shiba Inu" -> "Shiba Inu dog" (più naturale per T5/FLUX)
     if "," in species:
         parts = [p.strip() for p in species.split(",", 1)]
         if len(parts) == 2:
@@ -146,11 +120,11 @@ def _compile_living_phrase(attributes: dict) -> str:
 
 def compile_subject_phrase(fingerprints: dict) -> str:
     """
-    Punto di ingresso principale: dato il dizionario 'info' di un concept
-    nel database, ritorna una noun phrase pulita in linguaggio naturale,
-    pronta per sostituire {0} nei prompt ufficiali DreamBench.
+    Main entry point: given the 'info' dictionary of a concept
+    in the database, returns a clean noun phrase in natural language,
+    ready to replace {0} in the official DreamBench prompts.
 
-    Esempi di output:
+    Output examples:
       OBJECT -> "maroon backpack with colorful patches on the front pocket"
       LIVING -> "Shiba Inu dog with short tan coat, white patch on the left paw"
     """
@@ -160,7 +134,6 @@ def compile_subject_phrase(fingerprints: dict) -> str:
     else:
         phrase = _compile_object_phrase(fingerprints)
 
-    # pulizia finale: niente doppi spazi, niente virgole pendenti
     phrase = " ".join(phrase.split())
     phrase = phrase.strip(" ,")
     return phrase
@@ -168,14 +141,14 @@ def compile_subject_phrase(fingerprints: dict) -> str:
 
 def build_dreambench_prompt(template: str, subject_phrase: str, is_property_modification: bool = False) -> str:
     """
-    Inietta la subject_phrase nel template DreamBench (che usa {0}).
+    Inject the subject_phrase into the DreamBench template (which uses {0}).
 
     Prompt 0-19 (recontextualization / accessorization):
-        Separa la noun phrase dalla scena con ", photographed <scene>".
-        Questo evita che FLUX interpreti attributi ambientali (es. "blue house",
-        "Eiffel Tower") come proprietà dell'oggetto (attribute bleeding).
+        Separate the noun phrase from the scene with ", photographed <scene>".
+        This avoids FLUX interpreting environmental attributes (e.g., "blue house",
+        "Eiffel Tower") as properties of the object (attribute bleeding).
 
-        Esempi:
+        Examples:
           "a {0} in the jungle"
             -> "a <phrase>, photographed in the jungle"
           "a {0} with the Eiffel Tower in the background"
@@ -184,20 +157,18 @@ def build_dreambench_prompt(template: str, subject_phrase: str, is_property_modi
             -> "a <phrase>, photographed on top of pink fabric"
 
     Prompt 20-24 (property modification: "a red {0}", "a cube shaped {0}"...):
-        Nessuna separazione — il modificatore deve restare attaccato al soggetto
-        perché è esattamente ciò che il prompt chiede di alterare.
-        Passa is_property_modification=True per usare questo path.
+        No separation — the modifier must remain attached to the subject
+        because it is exactly what the prompt asks to alter.
+        Pass is_property_modification=True to use this path.
 
-        Esempio:
+        Example:
           "a red {0}" -> "a red <phrase>"
     """
     if is_property_modification:
-        # Inserimento diretto: il modificatore fa parte del soggetto
         return template.format(subject_phrase)
 
-    # Split prefix / scene sul placeholder {0}
     parts = template.split("{0}", 1)
-    prefix = parts[0].strip()          # tipicamente "a"
+    prefix = parts[0].strip()         
     scene  = parts[1].strip() if len(parts) > 1 else ""
 
     if not scene:
@@ -207,7 +178,7 @@ def build_dreambench_prompt(template: str, subject_phrase: str, is_property_modi
 
 
 # ==========================================
-# ESEMPIO DI UTILIZZO (stesso stile del modulo originale)
+# USAGE EXAMPLE
 # ==========================================
 if __name__ == "__main__":
     object_fp = {
@@ -240,7 +211,6 @@ if __name__ == "__main__":
     print("LIVING phrase:", live_phrase)
     print()
 
-    # Recontextualization (prompt 0-19) — usa separazione fotografica
     recontex_templates = [
         "a {0} in the jungle",
         "a {0} on top of pink fabric",
@@ -253,7 +223,6 @@ if __name__ == "__main__":
 
     print()
 
-    # Property modification (prompt 20-24) — inserimento diretto
     property_templates = [
         "a red {0}",
         "a purple {0}",

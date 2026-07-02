@@ -1,19 +1,13 @@
 """
 pipeline/refine_dreambench.py
 
-Refine per il benchmark DreamBench. Script SEPARATO da
-pipeline_orchestrator.stage_refine.
 
-Scelta concordata (più safe): il refine riscrive SOLO la subject_phrase
-compilata da Qwen3-VL (es. "maroon backpack with colorful patches"), NON il
-prompt DreamBench completo. Il template del prompt ufficiale (es.
-"a {0} in the jungle") resta sempre fisso e viene reinserito con
-build_dreambench_prompt() dopo la riscrittura. Questo evita che il recovery
-loop alteri accidentalmente il contesto/scena richiesto dal benchmark
-ufficiale, mantenendo il confronto con DreamBooth più pulito.
+Refnie for DreamBench benchmark. SEPARATE script from pipeline_orchestrator.stage_refine.
+Agreed choice (safer): the refine rewrites ONLY the subject_phrase compiled by Qwen3-VL (e.g., "maroon backpack with colorful patches"), 
+NOT the full DreamBench prompt. The official prompt template (e.g., "a {0} in the jungle") 
+remains fixed and is reinserted with build_dreambench_prompt() after rewriting. This prevents the recovery 
+loop from accidentally altering the context/scene required by the official benchmark, keeping the comparison with DreamBooth cleaner.
 
-Opera solo sulle entry presenti in rejected_dreambench.json, che già esclude
-per costruzione i 5 prompt di property modification (vedi verify_dreambench.py).
 """
 
 import os
@@ -47,19 +41,16 @@ def _build_reasoner():
 
 def _sanitize_rewritten_subject_phrase(raw: str) -> str:
     """
-    qwen3_rewrite_prompt() usa un'istruzione generica (pensata per prompt
-    FLUX completi con scena) che dice esplicitamente di "keep the scene/
-    background" e di restituire "a single fluent paragraph". Dato che qui
-    passiamo SOLO la subject_phrase (senza scena), il modello a volte
-    risponde con una frase completa (es. "This is a maroon backpack with...")
-    invece di una noun phrase pulita. Questa funzione ripulisce i pattern
-    più comuni prima di reinserire il risultato nel template DreamBench fisso.
+    qwen3_rewrite_prompt() use a generic instruction (for complete FLUX prompts 
+    with scenery), that explicitly says to "keep the scene/background" and to
+    return "a single fluent paragraph". Since here we pass ONLY the subject_phrase
+    (without scene), the model sometimes responds with a complete sentence (e.g., "This is a
+    maroon backpack with...") instead of a clean noun phrase. This function cleans up the
+    most common patterns before reinserting the result into the fixed DreamBench template.
+    
     """
     text = raw.strip().strip(".")
-    # Rimuove apertura a frase completa tipo "This/It is a ..."
     text = re.sub(r"^(this is|it is|it's|that is)\s+", "", text, flags=re.IGNORECASE)
-    # Rimuove articolo iniziale ridondante ("a", "an") perché viene già
-    # fornito dal template DreamBench ("a {0} in the jungle")
     text = re.sub(r"^(a|an)\s+", "", text, flags=re.IGNORECASE)
     return text.strip()
 
@@ -68,14 +59,14 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
     print(f"\n{'='*70}\n🚑 REFINE DREAMBENCH (subject_phrase only, template fisso)\n{'='*70}")
 
     if not os.path.exists(rejected_path) or os.path.getsize(rejected_path) == 0:
-        print("   ✅ Nessun rejected_dreambench.json o file vuoto. Niente da recuperare!")
+        print("   ✅ No rejected_dreambench.json or file empty. Nothing to recover!")
         return
 
     with open(rejected_path, "r", encoding="utf-8") as f:
         rejected_dict = json.load(f)
 
     if not rejected_dict:
-        print("   ✅ Lista rejected vuota. Niente da recuperare!")
+        print("   ✅ List rejected empty. Nothing to recover!")
         return
 
     with open(database_path, "r", encoding="utf-8") as f:
@@ -85,13 +76,13 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
     FLUX_URL     = getattr(Config.Models, "RECOVERY_FLUX_URL", "http://127.0.0.1:8766")
     MAX_ATTEMPTS = Config.Refine.MAX_ITERATIONS
 
-    print(f"   Trovate {len(rejected_dict)} immagini da curare.")
-    print("   Caricamento Qwen3-VL e CLIP in VRAM per il loop di recovery...")
+    print(f"   Found {len(rejected_dict)} images to refine.")
+    print("   Loading Qwen3-VL and CLIP in VRAM for the recovery loop...")
     reasoner = _build_reasoner()
     clip_calculator = ClipScoreCalculator(device="cuda")
 
     # -----------------------------------------------------------------------
-    # 1. Inizializza stato per ogni immagine rejected (chiave composita)
+    # 1. Initialize state for each rejected image (composite key)
     # -----------------------------------------------------------------------
     states = {}
     for composite_key, fail_data in rejected_dict.items():
@@ -108,12 +99,12 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
             "concept_id":            concept_id,
             "prompt_idx":            prompt_idx,
             "fingerprints":          fingerprints,
-            "template":              template,                         # FISSO, mai riscritto
+            "template":              template,                         
             "current_subject_phrase": initial_subject_phrase,
             "ref_image_path":        fail_data["ref_image_path"],
             "missing_details":       fail_data.get("missing_details", []),
             "original_fail_reason":  fail_data.get("missing_details", []),
-            "gen_image_path":        fail_data["gen_image_path"],       # immagine fallita originale
+            "gen_image_path":        fail_data["gen_image_path"],     
             "is_fixed":              False,
             "verification":          None,
             "attempts_history":      [],
@@ -124,14 +115,14 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
     graveyard_count = 0
 
     # -----------------------------------------------------------------------
-    # 2. Loop per tentativo — batch su tutte le immagini rejected attive
+    # 2. Loop for tentative — batch on all rejected images still active
     # -----------------------------------------------------------------------
     for attempt in range(1, MAX_ATTEMPTS + 1):
         active = {k: s for k, s in states.items() if not s["is_fixed"]}
         if not active:
             break
 
-        print(f"\n   🔄 TENTATIVO {attempt}/{MAX_ATTEMPTS} — {len(active)} immagini attive")
+        print(f"\n   🔄 Tentative {attempt}/{MAX_ATTEMPTS} — {len(active)} active images")
 
         prompts_batch, seeds_batch, paths_batch, keys_batch, sources_batch = [], [], [], [], []
 
@@ -141,7 +132,6 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
                 else (state["attempts_log"][-1].get("image_path") if state["attempts_log"] else None)
             )
 
-            # --- Riscrive SOLO la subject_phrase, NON il template ---
             raw_rewritten = qwen3_rewrite_prompt(
                 reasoner=reasoner,
                 original_prompt=state["current_subject_phrase"],
@@ -153,7 +143,6 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
             )
             new_subject_phrase = _sanitize_rewritten_subject_phrase(raw_rewritten)
 
-            # Reinserimento nel template fisso DreamBench
             new_prompt = build_dreambench_prompt(state["template"], new_subject_phrase)
             print(f"      [{composite_key}] 📝 {new_prompt[:80]}...")
 
@@ -170,7 +159,7 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
             state["_new_subject_phrase"] = new_subject_phrase
             state["_missing_before"]     = list(state["missing_details"])
 
-        print(f"      🚀 Generazione FLUX: {len(prompts_batch)} immagini (una alla volta)...")
+        print(f"      🚀 Generation FLUX: {len(prompts_batch)} images (one at a time)...")
         batch_results = []
         for j in range(len(prompts_batch)):
             res = _generate_batch_http(
@@ -188,7 +177,7 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
             attempt_image_path = paths_batch[i]
 
             if not success:
-                print(f"      [{composite_key}] ⚠️ Generazione FLUX fallita.")
+                print(f"      [{composite_key}] ⚠️ Generation FLUX failed.")
                 state["attempts_log"].append({
                     "attempt": attempt, "success": False,
                     "image_path": None, "method": "flux_generation_failed",
@@ -219,7 +208,7 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
             state["verification"] = verification
 
             if verification["is_verified"]:
-                print(f"      [{composite_key}] ✅ GUARITO al tentativo {attempt}!")
+                print(f"      [{composite_key}] ✅ Healed at attempt {attempt}!")
                 rejected_name = state["gen_image_path"].replace(".png", f"_rejected_attempt{attempt-1}.png")
                 if os.path.exists(state["gen_image_path"]):
                     os.rename(state["gen_image_path"], rejected_name)
@@ -235,10 +224,10 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
                     new_missing = [a for a in state["original_fail_reason"] if len(a) <= MAX_ATTR_LENGTH][:3]
                 state["missing_details"] = new_missing
                 state["current_subject_phrase"] = state["_new_subject_phrase"]
-                print(f"      [{composite_key}] ❌ Permangono: {state['missing_details']}")
+                print(f"      [{composite_key}] ❌ Still missing: {state['missing_details']}")
 
     # -----------------------------------------------------------------------
-    # 3. Report finale
+    # 3. final report
     # -----------------------------------------------------------------------
     recovery_report = {}
     for composite_key, state in states.items():
@@ -264,7 +253,7 @@ def run_dreambench_refine(database_path: str, rejected_path: str, output_dir: st
         json.dump(recovery_report, f, indent=4, ensure_ascii=False)
 
     print(f"\n📋 Report → {report_path}")
-    print(f"📊 Recovery: {recovered_count} salvati | {graveyard_count} graveyard")
+    print(f"📊 Recovery: {recovered_count} healed | {graveyard_count} graveyard")
 
     del reasoner
     del clip_calculator

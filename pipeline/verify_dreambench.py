@@ -1,24 +1,21 @@
 """
 pipeline/verify_dreambench.py
 
-Verify per il benchmark DreamBench. Script SEPARATO da
-pipeline_orchestrator.stage_verify_base perché la struttura di output è
-diversa (concept x prompt x immagine, non un singolo file per concept) e
-perché qui si applica una regola di esclusione specifica per i 5 prompt di
-property modification (vedi dreambench_prompts.PROPERTY_MODIFICATION_INDICES).
+Verify for DreamBench benchmark.
 
-Regola di esclusione (decisione concordata):
-- Per i 5 prompt "a red {0}", "a purple {0}", "a shiny {0}", "a wet {0}",
-  "a cube shaped {0}" il prompt stesso richiede di cambiare colore/materiale/
-  forma del soggetto -> il verify per attributi (che controlla la fedeltà di
-  quegli stessi campi rispetto al reference) andrebbe in contraddizione
-  logica. Queste immagini vengono quindi SKIPPATE dal verify e passano
-  dirette alla Fase 4 (metriche ufficiali).
-- Per gli altri 20 prompt il fingerprint va verificato COMPLETO, senza
-  esclusioni per-campo.
+Esclusion rule:
+- For the 5 prompts "a red {0}", "a purple {0}", "a shiny {0}", "a wet {0}",
+  "a cube shaped {0}" the prompt itself requires changing color/material/shape
+   of the subject -> the attribute verify (which checks the fidelity of 
+   those same fields against the reference) would be in logical contradiction.
+   These images are therefore SKIPPED from the verify and go directly to Phase 4
+   (official metrics).
+- For the other 20 prompts the fingerprint must be verified COMPLETELY, without
+    per-field exclusions.
 
-Output: un unico file rejected_dreambench.json con chiave composita
-"<concept_id>/{prompt_idx:02d}/{img_idx}" per ogni immagine fallita.
+
+Output: one file rejected_dreambench.json with composite key
+"<concept_id>/{prompt_idx:02d}/{img_idx}" for each failed image
 """
 
 import os
@@ -65,14 +62,14 @@ def _build_reasoner():
 
 def run_dreambench_verify(database_path: str, output_dir: str) -> str:
     print(f"\n{'='*70}")
-    print("📍 VERIFY DREAMBENCH (Qwen3-VL + CLIP) — esclude i 5 prompt property-mod")
+    print("📍 VERIFY DREAMBENCH (Qwen3-VL + CLIP) — excluded the 5 property-modification prompts")
     print(f"{'='*70}\n")
 
     with open(database_path, "r", encoding="utf-8") as f:
         database = json.load(f)
     concept_dict = database.get("concept_dict", {})
 
-    print("   Caricamento modelli di verifica...")
+    print("   Loading verification models...")
     reasoner = _build_reasoner()
     clip_calculator = ClipScoreCalculator(device="cuda")
 
@@ -88,7 +85,7 @@ def run_dreambench_verify(database_path: str, output_dir: str) -> str:
         clean_name = _sanitize_folder_name(concept_id)
 
         if ref_image_path is None:
-            print(f"   ⚠️  {concept_id}: nessuna immagine di riferimento → skip totale.")
+            print(f"   ⚠️  {concept_id}: no reference image → skip total.")
             continue
 
         prompts = get_prompts_for_entity_type(entity_type)
@@ -101,7 +98,6 @@ def run_dreambench_verify(database_path: str, output_dir: str) -> str:
             if not os.path.isdir(prompt_dir):
                 continue
 
-            # --- Regola di esclusione: property modification ---
             if is_property_modification_prompt(prompt_idx):
                 skipped_count += len([
                     f for f in os.listdir(prompt_dir) if f.endswith(".png")
@@ -148,11 +144,11 @@ def run_dreambench_verify(database_path: str, output_dir: str) -> str:
     with open(rejected_path, "w", encoding="utf-8") as f:
         json.dump(rejected_dict, f, indent=4, ensure_ascii=False)
 
-    print(f"\n📊 Verify completato:")
-    print(f"   Controllate (20 prompt validi): {total_checked}")
-    print(f"   ✅ Passate:  {verified_count}")
+    print(f"\n📊 Verify completed:")
+    print(f"   Verified (20 valid prompts): {total_checked}")
+    print(f"   ✅ Passed:  {verified_count}")
     print(f"   ❌ Rejected: {len(rejected_dict)}")
-    print(f"   ⏭️  Skippate (5 prompt property-mod, no verify): {skipped_count}")
+    print(f"   ⏭️  Skipped (5 property-mod prompts, no verify): {skipped_count}")
     print(f"   📁 Report → {rejected_path}")
 
     return rejected_path
@@ -162,7 +158,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Verify DreamBench (R2P-GEN)")
     parser.add_argument("--database", type=str, required=True)
     parser.add_argument("--output",   type=str, required=True,
-                        help="Cartella output_dreambench con le immagini generate")
+                        help="Directory for output_dreambench with generated images")
     args = parser.parse_args()
 
     run_dreambench_verify(args.database, args.output)

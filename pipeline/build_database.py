@@ -328,7 +328,6 @@ class DatabaseBuilder:
         concept_id = concept_data["concept_id"]
         images     = concept_data["images"]
 
-        # 1. Selezione immagini Top-K guidata dal Testo
         if self.use_clip_sel and self.clip_selector is not None:
             top_k_images = self.clip_selector.select(images, category=category, k=3)
             representative = top_k_images[0] # La vincitrice assoluta
@@ -336,19 +335,17 @@ class DatabaseBuilder:
             top_k_images = [images[0]]
             representative = images[0]
 
-        # Carica l'immagine vincitrice
         image = Image.open(representative).convert("RGB")
 
-        # Estrai fingerprints dalla vincitrice
         fingerprints = self._extract_fingerprints(image, category, concept_id)
 
         concept_key = f"<{concept_id}>"
         entry = {
             "name":     concept_id,
-            "image":    images,             # tutte le immagini del concept
+            "image":    images,             
             "representative_image": representative,
-            "top_k_images": top_k_images,   # NUOVO CAMPO: storicizza i backup per il recovery
-            "info":     fingerprints,       # fingerprints JSON
+            "top_k_images": top_k_images,   
+            "info":     fingerprints,       
             "category": category,
         }
 
@@ -356,7 +353,7 @@ class DatabaseBuilder:
 
     def build(self) -> dict:
         print("\n" + "="*70)
-        print("BUILD DATABASE — R2P-GEN FLUX Edition (DIEGO VARIANTE SEMANTICA)")
+        print("BUILD DATABASE - R2P-GEN FLUX Edition (SEMANTIC VARIANT)")
         print("="*70)
         Config.print_summary()
         print(f"  perva-data   : {self.perva_data_dir}")
@@ -369,14 +366,14 @@ class DatabaseBuilder:
         print("[1/3] Discovering concepts...")
         all_concepts = self._get_concepts()
         if not all_concepts:
-            print("❌ Nessun concept trovato. Controlla R2P_PERVA_DATA.")
+            print("❌ No concept found. Check R2P_PERVA_DATA.")
             return {"success_count": 0, "total_concepts": 0}
 
-        print(f"   Trovati {len(all_concepts)} concepts.")
+        print(f"   Found {len(all_concepts)} concepts.")
 
         if self.debug_mode:
             all_concepts = all_concepts[:self.debug_limit]
-            print(f"   DEBUG MODE: processing solo {len(all_concepts)} concepts.")
+            print(f"   DEBUG MODE: processing only {len(all_concepts)} concepts.")
 
         print("\n[2/3] Extracting fingerprints (Qwen3-VL)...")
         success = 0
@@ -389,7 +386,7 @@ class DatabaseBuilder:
                 success += 1
             except Exception as e:
                 cid = concept_data.get("concept_id", "?")
-                print(f"\n   ⚠️  Errore su '{cid}': {e}")
+                print(f"\n   ⚠️  Error on '{cid}': {e}")
                 continue
 
         print(f"\n[3/3] Saving database → {self.output_path}")
@@ -397,7 +394,7 @@ class DatabaseBuilder:
         with open(self.output_path, "w", encoding="utf-8") as f:
             json.dump(self._database, f, indent=4, ensure_ascii=False)
 
-        print(f"\n✅ Done! {success}/{len(all_concepts)} concepts processati.")
+        print(f"\n✅ Done! {success}/{len(all_concepts)} concepts processed.")
         print(f"   Database: {os.path.abspath(self.output_path)}")
 
         if self._reasoner is not None:
@@ -424,13 +421,13 @@ if __name__ == "__main__":
                         choices=["train", "test", "all"],
                         help="Dataset split")
     parser.add_argument("--debug",       action="store_true", default=None,
-                        help="Debug mode: processa solo i primi N concepts")
+                        help="Debug mode: process only the first N concepts")
     parser.add_argument("--debug-limit", type=int, default=None,
-                        help="Numero concepts in debug mode")
+                        help="Number of concepts in debug mode")
     parser.add_argument("--no-clip",     action="store_true",
-                        help="Disabilita Semantic CLIP selection")
+                        help="Disable Semantic CLIP selection")
     parser.add_argument("--output", type=str, default=None,
-                        help="Percorso di output per il database JSON (sovrascrive il default)")
+                        help="Path to output JSON database (overrides default)")
     args = parser.parse_args()
 
     builder = DatabaseBuilder(

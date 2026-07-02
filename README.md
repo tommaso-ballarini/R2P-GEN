@@ -145,25 +145,70 @@ python prepare_dreambench.py
 
 ## Usage
 
-### Step 1 — Start the FLUX Server
+### Step 0: Set Environment Variables
 
-The FLUX model is kept resident in VRAM via a background HTTP server to avoid repeated loading across pipeline stages. Start it before any pipeline run:
+Beyond the variables listed in the [Environment Variables](#environment-variables) table, the pipeline scripts rely on a few additional exports (see the `run_ablation_*.sh` / `pipeline_dreambench.sh` scripts under `scripts/` for full examples):
 
 ```bash
-python flux_server.py
+export PYTHONPATH=$PWD
+export R2P_PERVA_DATA=/path/to/perva-data        # or dreambench data root
+export R2P_MODELS_BASE=/path/to/models_cache      # local HF weights cache
+export R2P_CLUSTER_MODE=true                      # enable cluster path layout
+export HF_HOME=/path/to/models_cache
+export R2P_FLUX_MODEL=/path/to/FLUX.2-klein-9B
+export HF_DATASETS_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export RECOVERY_FLUX_URL="http://127.0.0.1:8766"  # must match the FLUX server port (Step 1)
+```
+Note: Wherever you see " /path/to/ ", please replace it with the actual path on your local system.
+
+### Step 1: Start the FLUX Server
+
+The FLUX model is kept resident in VRAM via a background HTTP server to avoid repeated loading across pipeline stages. It must be running before any stage that generates or refines images (`generate_only`, `refine`, `full_auto`).
+
+**Manual / interactive mode** : useful for local development or debugging:
+
+```bash
+python flux_server.py --port 8766
 ```
 
-The server listens on `http://127.0.0.1:8767` by default. Keep this process running in a separate terminal or tmux session throughout the experiment.
+The server listens on `http://127.0.0.1:8766` by default. Keep this process running in a separate terminal or tmux session throughout the experiment, and make sure `RECOVERY_FLUX_URL` (Step 0) points at the same port.
 
-### Step 2 — Build the Fingerprint Database
+**Automatic mode (Slurm / cluster runs)** : the server is started in the background, health-checked, and torn down by the job script itself, so no manual step is needed. This is the pattern used in `scripts/run_ablation_E.sh`, `scripts/run_ablation_F.sh`, and `pipeline_dreambench.sh`:
 
 ```bash
-python build_database.py
+CUDA_VISIBLE_DEVICES=1 python flux_server.py --port 8766 &
+FLUX_PID=$!
+
+# Poll /health until ready (adjust timeout as needed)
+for i in $(seq 1 36); do
+    if curl -s -f -o /dev/null "http://127.0.0.1:8766/health"; then
+        echo "✅ FLUX ready"
+        break
+    fi
+    sleep 5
+done
+
+# ... run generate_only / refine stages here ...
+
+kill $FLUX_PID   # shut the server down once generation/refine is complete
+```
+
+When using this mode, some scripts run FLUX on a dedicated GPU (e.g. `CUDA_VISIBLE_DEVICES=1`) so it doesn't contend with the VLM stages (Qwen3-VL / InternVL3.5) running on another GPU.
+
+### Step 2: Build the Fingerprint Database
+
+```bash
+python pipeline/build_database.py
 ```
 
 This runs Stage 0: CLIP-based view selection followed by Qwen3-VL fingerprint extraction. Output is written to `database/database.json`.
 
-### Step 3 — Run the Pipeline
+> For DreamBench-specific runs, use the dedicated variant instead: `python pipeline/build_database_db.py --data-dir "$R2P_PERVA_DATA" --split test` (see `pipeline_dreambench.sh`).
+
+### Step 3: Run the Pipeline
 
 All pipeline stages are invoked through `flux_loop.py` via the `--stage` argument.
 
@@ -218,10 +263,10 @@ python flux_loop.py --database database/database.json --output output_t2i/ \
     --stage generate_only --no-image-cond
 ```
 
-For end-to-end Slurm cluster runs, refer to the scripts in `scripts/`:
+For end-to-end Slurm cluster runs, refer to the scripts in `runs/`:
 
 ```bash
-sbatch scripts/run_full_e2e.sh
+sbatch runs/run_full_e2e.sh
 ```
 
 ---

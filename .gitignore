@@ -22,6 +22,7 @@ logs/
 output/
 checkpoints/
 output_dreambench/
+old_archive/
 
 *.pth
 *.safetensors

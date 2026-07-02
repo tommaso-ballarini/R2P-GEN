@@ -102,7 +102,6 @@ class Config:
         FLUX_MODEL = _FLUX_PATH
         FLUX_TEXT_URL = "http://127.0.0.1:8767"
 
-        # --- Modelli CLIP e DINO standardizzati ---
         CLIP_MODEL = _model_path(
             repo_id="openai/clip-vit-large-patch14",
             local_dirname="clip-vit-large-patch14"

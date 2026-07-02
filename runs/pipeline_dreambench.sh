@@ -12,8 +12,8 @@
 #SBATCH --error=logs/ablation_A/%j.err
 
 # ===========================================================================
-# Test END-TO-END self-contained on 3 concept for debugging:
-#   1) build_database_db.py   --debug --debug-limit 3       (recreate db)
+# Test END-TO-END 
+#   1) build_database_db.py         (recreate db)
 #   2) generate_dreambench.py                               (FLUX, zero-shot)
 #   3) verify_dreambench.py                                 (Qwen3-VL + CLIP)
 #   4) refine_dreambench.py                                 (recovery loop)
